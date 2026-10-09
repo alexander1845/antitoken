@@ -23,7 +23,12 @@ public sealed class HttpsVault(Configuration config, MinecraftIdentity identity,
             server.Limits.MaxRequestBodySize = 8192;
             server.Limits.MaxConcurrentConnections = 16;
             server.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(10);
-            server.Listen(IPAddress.Loopback, config.HttpsPort, listen => listen.UseHttps(certificate));
+            // TLS 1.2+ only (1.3 where Windows supports it), so the game can't be talked down to legacy protocol versions.
+            server.Listen(IPAddress.Loopback, config.HttpsPort, listen => listen.UseHttps(new Microsoft.AspNetCore.Server.Kestrel.Https.HttpsConnectionAdapterOptions
+            {
+                ServerCertificate = certificate,
+                SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13
+            }));
         });
         var app = builder.Build();
         app.Run(HandleAsync);
@@ -41,7 +46,7 @@ public sealed class HttpsVault(Configuration config, MinecraftIdentity identity,
         context.Response.Headers.CacheControl = "no-store";
         context.Response.Headers["X-Content-Type-Options"] = "nosniff";
         if (!IPAddress.IsLoopback(context.Connection.RemoteIpAddress ?? IPAddress.None) ||
-            context.Request.Host.Host != "127.0.0.1" || context.Request.QueryString.HasValue ||
+            context.Request.Host.Host != "127.0.0.1" || !VaultPolicy.IsAllowedQuery(context.Request.Method, path, context.Request.QueryString.Value ?? "") ||
             DateTimeOffset.UtcNow >= identity.ExpiresAt.AddSeconds(-30) ||
             !VaultPolicy.IsAllowed(config.Allowlist, context.Request.Method, path))
         { context.Response.StatusCode = 403; return; }
@@ -55,12 +60,12 @@ public sealed class HttpsVault(Configuration config, MinecraftIdentity identity,
         {
             long now = Environment.TickCount64;
             while (calls.TryPeek(out long time) && now - time >= 60_000) calls.Dequeue();
-            if (calls.Count >= 60) { context.Response.StatusCode = 429; return; }
+            if (calls.Count >= 120) { context.Response.StatusCode = 429; return; }
             calls.Enqueue(now);
         }
         try
         {
-            string upstreamUrl = VaultPolicy.Upstream(path);
+            string upstreamUrl = VaultPolicy.Upstream(path, context.Request.QueryString.Value ?? "");
             using var request = new HttpRequestMessage(new HttpMethod(context.Request.Method), upstreamUrl);
             if (!isPublic) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", identity.Token.Reveal());
             // Allowed POSTs have no caller-controlled body. No URL/host/header pass-through.

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
 using TokenVault.Core;
@@ -12,10 +11,8 @@ public static class JavaLauncher
     {
         if (session.MinecraftVersion != c.MinecraftVersion || session.ExpiresAt <= DateTimeOffset.UtcNow || session.HttpsPort != c.HttpsPort)
             throw new InvalidDataException("Vault descriptor does not match configuration or has expired.");
-        string java = JavaLocator.Find(c) ?? throw new UserVisibleException("Java 25 is not installed yet. Press Play again to install it.");
-        string javaVersion = await CaptureAsync(java, ["-version"], ct);
-        if (!Regex.IsMatch(javaVersion, "version \"25(?:[.\"])", RegexOptions.CultureInvariant))
-            throw new UserVisibleException("Minecraft 26.1.2 needs Java 25; the selected java.exe is a different version.");
+        // Java is never executed outside the sandbox: the runtime Token Vault installed matches the version's JSON.
+        string java = JavaLocator.Find(c) ?? throw new UserVisibleException("Java isn't installed yet. Press Play again to install it.");
         log("Java: " + java);
 
         string game = Configuration.Expand(c.GameDirectory), mods = Configuration.Expand(c.ModsDirectory), javaHome = JavaLocator.Home(java);
@@ -27,7 +24,7 @@ public static class JavaLauncher
         Directory.CreateDirectory(natives); Directory.CreateDirectory(temp);
         try
         {
-            var installed = InstalledFabric.Resolve(c, session, natives);
+            var installed = InstalledVersion.Resolve(c, session, natives);
             string skins = Path.Combine(Configuration.Expand(c.MinecraftDirectory), "assets", "skins");
             // Every folder is checked before any permission changes, so a bad setting changes nothing.
             var readOnly = installed.ReadDirectories.Append(javaHome).ToList();
@@ -46,45 +43,61 @@ public static class JavaLauncher
 
             log("Sharing only the needed folders with the sandbox…");
             foreach (string directory in readOnly) sandbox.GrantRead(directory);
+            if (c.LoaderDirectory.Length > 0) sandbox.GrantWrite(Configuration.Expand(c.LoaderDirectory)); // Forge/NeoForge folder
             if (!modsInsideGame) sandbox.GrantRead(mods);
             Directory.CreateDirectory(skins);
-            sandbox.GrantWrite(skins); // skin cache only; holds downloaded PNGs
+            // Skin cache only; holds downloaded PNGs. Not needed to play, so a failure here doesn't stop the launch.
+            try { sandbox.GrantWrite(skins); }
+            catch (Exception ex) when (ex is UserVisibleException or UnauthorizedAccessException or IOException)
+            { log("Skin cache unavailable (" + ex.Message + "). The game still starts."); }
             // The server list points the game at Token Vault's local brokers. No sandboxed process is running
             // now (each game's job is gone), so nothing can race this write.
             ServersFile.Write(Path.Combine(game, "servers.dat"), session.Servers);
+            // Captures the JVM's console output. Created before the sandbox can write the folder; read back only
+            // through this handle, so the sandbox can't redirect what Token Vault reads.
+            using var output = new FileStream(Path.Combine(run, "output.log"), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.ReadWrite);
             sandbox.GrantWrite(game);
             sandbox.GrantWrite(run);
 
             var properties = Properties(session, trust, temp, game);
             var environment = SandboxEnvironment(temp);
-            if (JavaLocator.IsJdk(java))
+            bool modernAuthlib = installed.ClassPath.Split(Path.PathSeparator)
+                .Any(path => Regex.IsMatch(Path.GetFileName(path), @"^authlib-([4-9]|\d{2,})\.", RegexOptions.CultureInvariant)); // 1.19.3+
+            if (JavaLocator.IsJdk(java) && modernAuthlib)
             {
                 log("Checking Authlib redirection inside the sandbox…");
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeout.CancelAfter(TimeSpan.FromSeconds(90));
                 int result;
                 using (var check = sandbox.Start(java, [.. properties, "--class-path", installed.ClassPath, probe,
-                           $"https://127.0.0.1:{session.HttpsPort}", session.FakeToken], run, environment, allowClipboard: false))
+                           $"https://127.0.0.1:{session.HttpsPort}", session.FakeToken], run, environment, allowClipboard: false, output.SafeFileHandle))
                 {
                     try { result = await check.WaitForExitAsync(timeout.Token); }
                     catch (OperationCanceledException) when (!ct.IsCancellationRequested) { result = -1; }
                 }
                 if (result != 0)
-                    throw new UserVisibleException("The sandboxed Authlib check failed, so the game was not started. " +
-                        "Check that sandbox networking is allowed and that Minecraft 26.1.2 + Fabric are installed correctly.");
+                {
+                    // Compatibility only (the game holds a fake token either way): report it and still start the game.
+                    string tail = Tail(output);
+                    foreach (string line in tail.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(12)) log("  " + line);
+                    log($"Warning: the sign-in self-check failed ({ExitText(result)}: {LastLine(tail) ?? "no output"}). Chat signing may not work.");
+                }
+                else log("Self-check passed: the game talks only to Token Vault for sign-in.");
+                output.SetLength(0);
             }
-            else log("Authlib check skipped (this Java has no compiler). The vault still refuses everything outside its allowlist.");
 
             var arguments = new List<string>(installed.JvmArguments);
             arguments.AddRange(properties);
             arguments.Add("-Xmx" + c.MemoryMb + "M");
-            arguments.Add("-Dfabric.modsFolder=" + mods);
             arguments.Add(installed.MainClass);
             arguments.AddRange(installed.GameArguments);
             // No command-line logging, @argfiles, token files, or real-token environment inheritance.
-            log($"Starting Minecraft {c.MinecraftVersion} with Fabric in the sandbox{(c.AllowClipboard ? "" : " (clipboard blocked)")}.");
-            using var process = sandbox.Start(java, arguments, game, environment, c.AllowClipboard);
-            return await process.WaitForExitAsync(ct); // Dispose kills the whole job, including on cancel.
+            log($"Starting Minecraft {c.MinecraftVersion} ({GameInstaller.LoaderName(c.Loader)}) in the sandbox{(c.AllowClipboard ? "" : ", clipboard blocked")}.");
+            using var process = sandbox.Start(java, arguments, game, environment, c.AllowClipboard, output.SafeFileHandle);
+            int code = await process.WaitForExitAsync(ct); // Dispose kills the whole job, including on cancel.
+            if (code != 0)
+                foreach (string line in Tail(output).Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(20)) log("  " + line);
+            return code;
         }
         finally
         {
@@ -92,8 +105,33 @@ public static class JavaLauncher
         }
     }
 
+    // Untrusted text from the sandbox: last 32 KB, control characters removed, for display only.
+    private static string Tail(FileStream output)
+    {
+        output.Flush();
+        long length = output.Length;
+        byte[] buffer = new byte[(int)Math.Min(length, 32 * 1024)];
+        output.Seek(length - buffer.Length, SeekOrigin.Begin);
+        output.ReadExactly(buffer);
+        string text = System.Text.Encoding.UTF8.GetString(buffer);
+        return new string(text.Where(ch => ch == '\n' || !char.IsControl(ch)).ToArray());
+    }
+
+    private static string? LastLine(string text) =>
+        text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .LastOrDefault(l => !l.StartsWith("at ", StringComparison.Ordinal)) is { } line ? (line.Length > 200 ? line[..200] + "…" : line) : null;
+
+    private static string ExitText(int code) => code switch
+    {
+        -1 => "timed out",
+        < 0 or > 255 => $"exit code 0x{code:X8}",
+        _ => $"exit code {code}"
+    };
+
     public static List<string> Properties(SessionDescriptor s, string trust, string temp, string game) =>
     ["-Dminecraft.api.env=custom", $"-Dminecraft.api.session.host=https://127.0.0.1:{s.HttpsPort}/session",
+        // Older Authlib builds (1.16-1.18) also read auth/account hosts; everything there is refused by the vault.
+        $"-Dminecraft.api.auth.host=https://127.0.0.1:{s.HttpsPort}/auth", $"-Dminecraft.api.account.host=https://127.0.0.1:{s.HttpsPort}/account",
         $"-Dminecraft.api.services.host=https://127.0.0.1:{s.HttpsPort}/services",
         $"-Dminecraft.api.profiles.host=https://127.0.0.1:{s.HttpsPort}/profiles",
         "-Djavax.net.ssl.trustStore=" + trust, "-Djavax.net.ssl.trustStoreType=JKS", "-Djavax.net.ssl.trustStorePassword=" + JavaTrustStore.Password,
@@ -120,28 +158,14 @@ public static class JavaLauncher
         "ProgramFiles", "ProgramFiles(x86)", "CommonProgramFiles", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "USERNAME", "USERDOMAIN"
     };
 
-    private static Dictionary<string, string> SandboxEnvironment(string temp)
+    // Windows needs USERPROFILE/LOCALAPPDATA to set up an AppContainer process, so these paths are passed (they are
+    // only names; the sandbox can't open them).
+    internal static Dictionary<string, string> SandboxEnvironment(string temp)
     {
         var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
             if (entry.Key is string key && Inherited.Contains(key) && entry.Value is string value) environment[key] = value;
         environment["TEMP"] = temp; environment["TMP"] = temp;
         return environment;
-    }
-
-    // Unsandboxed, but only ever runs `java -version` (no game or mod code).
-    private static async Task<string> CaptureAsync(string executable, IEnumerable<string> args, CancellationToken ct)
-    {
-        var info = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var key in info.Environment.Keys.ToArray()) if (!Inherited.Contains(key) && key is not ("TEMP" or "TMP")) info.Environment.Remove(key);
-        foreach (var arg in args) info.ArgumentList.Add(arg);
-        using var process = Process.Start(info) ?? throw new InvalidOperationException("Failed to start Java.");
-        Task<string> stdout = process.StandardOutput.ReadToEndAsync(ct), stderr = process.StandardError.ReadToEndAsync(ct);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(60));
-        try { await process.WaitForExitAsync(timeout.Token); }
-        finally { if (!process.HasExited) process.Kill(entireProcessTree: true); }
-        string result = await stdout + await stderr;
-        if (process.ExitCode != 0) throw new UserVisibleException("The selected java.exe did not run. Choose a working Java 25.");
-        return result;
     }
 }

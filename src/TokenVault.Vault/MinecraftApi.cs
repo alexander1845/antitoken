@@ -29,17 +29,11 @@ public sealed class MinecraftApi(HttpClient http)
             Properties = new { AuthMethod = "RPS", SiteName = "user.auth.xboxlive.com", RpsTicket = "d=" + msa },
             RelyingParty = "http://auth.xboxlive.com", TokenType = "JWT"
         }, ct);
-        using var xstsResponse = await http.PostAsJsonAsync("https://xsts.auth.xboxlive.com/xsts/authorize", new
+        using var xsts = await PostAsync("https://xsts.auth.xboxlive.com/xsts/authorize", new
         {
             Properties = new { SandboxId = "RETAIL", UserTokens = new[] { xbox.RootElement.GetProperty("Token").GetString()! } },
             RelyingParty = "rp://api.minecraftservices.com/", TokenType = "JWT"
         }, ct);
-        using var xsts = await JsonDocument.ParseAsync(await xstsResponse.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
-        if (!xstsResponse.IsSuccessStatusCode)
-        {
-            long code = xsts.RootElement.TryGetProperty("XErr", out var x) && x.TryGetInt64(out var n) ? n : 0;
-            throw new UserVisibleException(XstsError(code));
-        }
         progress?.Report("Signing in to Minecraft…");
         string uhs = xsts.RootElement.GetProperty("DisplayClaims").GetProperty("xui")[0].GetProperty("uhs").GetString()!;
         using var mc = await PostAsync("https://api.minecraftservices.com/authentication/login_with_xbox", new
@@ -72,11 +66,32 @@ public sealed class MinecraftApi(HttpClient http)
         _ => $"Xbox authorization failed (XErr {code}). Check account permissions."
     };
 
+    // Xbox field names are case-sensitive PascalCase. PostAsJsonAsync's default (web) options camel-case them,
+    // which Xbox rejects with HTTP 400, so the payload is serialized exactly as written.
+    private static readonly JsonSerializerOptions Exact = new();
+
     private async Task<JsonDocument> PostAsync(string url, object payload, CancellationToken ct)
     {
-        using var response = await http.PostAsJsonAsync(url, payload, ct);
-        if (!response.IsSuccessStatusCode)
-            throw new UserVisibleException($"Authentication step at {new Uri(url).Host} failed (HTTP {(int)response.StatusCode}). Check account/app approval.");
-        return await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = JsonContent.Create(payload, options: Exact) };
+        request.Headers.Accept.ParseAdd("application/json");
+        if (url.Contains("xboxlive.com", StringComparison.Ordinal)) request.Headers.Add("x-xbl-contract-version", "1");
+        using var response = await http.SendAsync(request, ct);
+        byte[] body = await response.Content.ReadAsByteArrayAsync(ct);
+        if (response.IsSuccessStatusCode) return JsonDocument.Parse(body);
+        long xerr = 0;
+        try { using var error = JsonDocument.Parse(body); if (error.RootElement.TryGetProperty("XErr", out var x)) x.TryGetInt64(out xerr); }
+        catch (JsonException) { }
+        throw new UserVisibleException(StepError(new Uri(url).Host, (int)response.StatusCode, xerr));
     }
+
+    public static string StepError(string host, int status, long xerr) => (host, status) switch
+    {
+        _ when xerr != 0 => XstsError(xerr),
+        (_, 429) => "Too many sign-in attempts. Wait a minute, then try again.",
+        ("user.auth.xboxlive.com", 400 or 401) => "Xbox didn't accept the Microsoft sign-in. Sign out, then sign in again.",
+        ("api.minecraftservices.com", 401 or 403) =>
+            "Minecraft didn't accept this sign-in. If you set your own Microsoft app ID, Mojang must approve it first; clear it in Settings to use the built-in one.",
+        ("xsts.auth.xboxlive.com", _) => "Xbox couldn't authorize this account for Minecraft. Sign in at xbox.com once, then try again.",
+        _ => $"Sign-in failed at {host} (HTTP {status}). Try again in a moment."
+    };
 }

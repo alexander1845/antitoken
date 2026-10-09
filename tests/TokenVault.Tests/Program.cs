@@ -23,7 +23,7 @@ if (args.Length == 2 && args[0] == "--resolve-fixture")
     string temp = Path.Combine(Path.GetTempPath(), "vault-resolve-test-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(temp);
     try
     {
-        var launch = InstalledFabric.Resolve(config, descriptor, temp);
+        var launch = InstalledVersion.Resolve(config, descriptor, temp);
         Check(launch.MainClass == "net.fabricmc.loader.impl.launch.knot.KnotClient", "Wrong Fabric entry point.");
         Check(launch.GameArguments.Contains(descriptor.FakeToken), "Missing fake token.");
         Check(!launch.JvmArguments.Concat(launch.GameArguments).Any(a => a.Contains("${", StringComparison.Ordinal)), "Unresolved template variable.");
@@ -38,12 +38,14 @@ var tests = new (string Name, Func<Task> Run)[]
     ("packet framing, compression bounds and malformed VarInts", PacketTests),
     ("Minecraft signed SHA-1 and continuous AES-CFB8", CryptoTests),
     ("fake JWT uniqueness and refresh-only cache serialization", TokenTests),
+    ("envelope encryption: AES-256-GCM, header/context binding, tamper and key checks", EnvelopeTests),
     ("OAuth loopback rejects wrong state and requires PKCE", OAuthCallbackTests),
     ("API deny ceiling, TLS, token substitution and response non-disclosure", HttpTests),
     ("owned online login, Fabric query, compression and encrypted relay", BrokerTests),
     ("offline upstream refusal before gameplay", OfflineTests),
     ("sandbox folder policy, command-line quoting and Java truststore format", SandboxTests),
-    ("server list file, server addresses, pack detection and pack path safety", PackTests)
+    ("server list file, server addresses, pack detection and pack path safety", PackTests),
+    ("join approval and one connection at a time", ApprovalTests)
 };
 int failures = 0;
 foreach (var test in tests)
@@ -104,6 +106,49 @@ static async Task CryptoTests()
     Check(restored.SequenceEqual(plain), "Continuous CFB8 decryption mismatch.");
 }
 
+static Task EnvelopeTests()
+{
+    // Unauthenticated test wrap (XOR pad): any change to the wrapped key yields a different DEK, which GCM must catch.
+    var wrap = new XorWrap(7);
+    byte[] secret = Encoding.UTF8.GetBytes("refresh-canary " + new string('x', 300));
+    byte[] a = Envelope.Seal(secret, "ctx|S-1-5-21-1", wrap), b = Envelope.Seal(secret, "ctx|S-1-5-21-1", wrap);
+    Check(Envelope.IsEnvelope(a) && a.AsSpan().IndexOf("refresh-canary"u8) < 0, "Plaintext visible in envelope.");
+    Check(!a.SequenceEqual(b), "Two seals of the same data must differ (fresh DEK and nonce).");
+    Check(Envelope.Open(a, "ctx|S-1-5-21-1", id => id == 7 ? wrap : null).SequenceEqual(secret), "Envelope roundtrip failed.");
+    // Every single-byte change anywhere (magic, version, wrap id, length, wrapped key, nonce, ciphertext, tag) is refused.
+    for (int i = 0; i < a.Length; i++)
+    {
+        byte[] tampered = a.ToArray(); tampered[i] ^= 0x01;
+        bool opened = false;
+        try { Envelope.Open(tampered, "ctx|S-1-5-21-1", id => id == 7 ? wrap : null); opened = true; }
+        catch (CryptographicException) { }
+        catch (ArgumentException) { } // a corrupted length can make the layout invalid
+        Check(!opened, $"Tampered byte {i} was accepted.");
+    }
+    Check(ThrowsCrypto(() => Envelope.Open(a, "ctx|S-1-5-21-2", id => wrap)), "Envelope opened under another user's context.");
+    Check(ThrowsCrypto(() => Envelope.Open(a, "ctx|S-1-5-21-1", id => null)), "Envelope opened without its key wrap.");
+    Check(ThrowsCrypto(() => Envelope.Open(a[..20], "ctx|S-1-5-21-1", id => wrap)), "Truncated envelope accepted.");
+    Check(Envelope.Open(Envelope.Seal([], "c", wrap), "c", _ => wrap).Length == 0, "Empty plaintext roundtrip failed.");
+    WindowsKeyWrapTests(secret);
+    return Task.CompletedTask;
+}
+
+static void WindowsKeyWrapTests(byte[] secret)
+{
+    if (!OperatingSystem.IsWindows()) return;
+    var dpapi = new DpapiKeyWrap("TokenVault.Tests"u8.ToArray());
+    Check(Envelope.Open(Envelope.Seal(secret, "c", dpapi), "c", id => id == DpapiKeyWrap.WrapId ? dpapi : null).SequenceEqual(secret), "DPAPI envelope roundtrip failed.");
+    // TPM-bound wrapping only where the runner has a TPM; CI runners usually don't, which exercises the fallback.
+    Console.WriteLine(TpmKeyWrap.TryOpen(dpapi, create: false) is { } tpm
+        ? (Envelope.Open(Envelope.Seal(secret, "c", tpm), "c", _ => tpm).SequenceEqual(secret) ? "     (TPM-bound wrap verified)" : throw new Exception("TPM roundtrip failed."))
+        : "     (no existing TPM key on this machine; DPAPI path verified)");
+}
+
+static bool ThrowsCrypto(Action action)
+{
+    try { action(); return false; } catch (CryptographicException) { return true; }
+}
+
 static async Task TokenTests()
 {
     var a = FakeToken.Create(Profile(), DateTimeOffset.UtcNow.AddHours(1));
@@ -128,7 +173,7 @@ static async Task TokenTests()
     await msal.GetAccountsAsync();
     Check(schemaChecked, "Actual MSAL cache schema was not checked.");
     Check(VaultPolicy.SanitizePath("/exfil/" + a).Contains("[redacted]"), "Fake leaked into audit path.");
-    Check(!InstalledFabric.Allowed(JsonNode.Parse("[{\"action\":\"allow\",\"os\":{\"name\":\"linux\"}}]")), "Wrong OS library accepted.");
+    Check(!InstalledVersion.Allowed(JsonNode.Parse("[{\"action\":\"allow\",\"os\":{\"name\":\"linux\"}}]")), "Wrong OS library accepted.");
 }
 
 static async Task OAuthCallbackTests()
@@ -277,6 +322,8 @@ static async Task OfflineTests()
         await PacketIO.WriteAsync(server.GetStream(), PacketIO.Packet(2), -1, ct);
         await Throws<InvalidDataException>(() => handling);
         Check(auth.Calls == 0, "Offline server obtained authentication.");
+        byte[] reason = await PacketIO.ReadAsync(game.GetStream(), -1, ct);
+        Check(reason.Length > 1 && reason[0] == 0, "The game was not told why the join failed.");
     }
     finally { remote.Stop(); local.Stop(); }
 }
@@ -376,6 +423,44 @@ static Task PackTests()
     return Task.CompletedTask;
 }
 
+static async Task ApprovalTests()
+{
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10)); var ct = timeout.Token;
+    var events = new List<string>();
+    async Task<(byte[] Reply, Task Handling, MockAuthenticator Auth)> Attempt(JoinApproval? approve, SemaphoreSlim? slot)
+    {
+        var local = new TcpListener(IPAddress.Loopback, 0); local.Start();
+        var game = new TcpClient(); await game.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)local.LocalEndpoint).Port, ct);
+        var accepted = await local.AcceptTcpClientAsync(ct); local.Stop();
+        var auth = new MockAuthenticator(new TaskCompletionSource<string>());
+        // Port 9 (discard) on loopback: an approved join would try to connect here; a blocked one never does.
+        var broker = new ConnectionBroker(new ServerEntry("Hypixel", "127.0.0.1", 9), Profile(), auth, events.Add, approve, slot);
+        Task handling = broker.HandleAsync(accepted.GetStream(), ct);
+        _ = handling.ContinueWith(_ => accepted.Dispose(), TaskScheduler.Default); // the game sees the socket close
+        await PacketIO.WriteAsync(game.GetStream(), PacketIO.Handshake("mc.hypixel.net", 25565, 2), -1, ct);
+        try { await PacketIO.WriteAsync(game.GetStream(), PacketIO.LoginStart(Profile()), -1, ct); }
+        catch (IOException) { } // a refused connection may already be closed
+        byte[] reply = [];
+        try { reply = await PacketIO.ReadAsync(game.GetStream(), -1, ct); } catch (Exception ex) when (ex is IOException or EndOfStreamException) { }
+        return (reply, handling, auth);
+    }
+
+    // A join the player didn't approve gets a disconnect message and never reaches the authenticator.
+    var asked = new List<string>();
+    var blocked = await Attempt((server, _) => { asked.Add(server.Name); return Task.FromResult(false); }, null);
+    await blocked.Handling;
+    Check(asked.SequenceEqual(new[] { "Hypixel" }), "Player was not asked before joining.");
+    Check(blocked.Reply.Length > 0 && blocked.Reply[0] == 0, "Blocked join did not get a disconnect message.");
+    Check(blocked.Auth.Calls == 0 && events.Contains("broker:blocked:127.0.0.1"), "Blocked join reached authentication.");
+
+    // While a connection holds the shared slot, any other connection (any server) is refused before approval or login.
+    var slot = new SemaphoreSlim(0, 1);
+    bool approvalAsked = false;
+    var busy = await Attempt((_, _) => { approvalAsked = true; return Task.FromResult(true); }, slot);
+    await Throws<InvalidOperationException>(() => busy.Handling);
+    Check(!approvalAsked && busy.Auth.Calls == 0 && events.Contains("broker:busy:127.0.0.1"), "Second connection was not refused.");
+}
+
 static async Task ProbeFixture(string directory)
 {
     Directory.CreateDirectory(directory);
@@ -410,4 +495,12 @@ sealed class MockAuthenticator(TaskCompletionSource<string> completion) : IConne
     public int Calls;
     public Task AuthorizeOwnedConnectionAsync(string serverHash, CancellationToken ct)
     { Calls++; completion.TrySetResult(serverHash); return Task.CompletedTask; }
+}
+
+sealed class XorWrap(byte id) : IKeyWrap
+{
+    private static readonly byte[] Pad = RandomNumberGenerator.GetBytes(32);
+    public byte Id => id;
+    public byte[] Wrap(byte[] key) => key.Select((b, i) => (byte)(b ^ Pad[i % 32])).ToArray();
+    public byte[] Unwrap(byte[] wrapped) => Wrap(wrapped);
 }

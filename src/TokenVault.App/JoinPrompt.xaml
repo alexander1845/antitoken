@@ -1,0 +1,42 @@
+<Window x:Class="TokenVault.App.JoinPrompt"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Token Vault — approve join" Width="440" SizeToContent="Height" ResizeMode="NoResize"
+        WindowStyle="None" Topmost="True" ShowInTaskbar="True" WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource Surface}" Foreground="{DynamicResource Text}" UseLayoutRounding="True"
+        FontFamily="{StaticResource UiFont}" FontSize="13.5" TextOptions.TextFormattingMode="Display">
+  <Border BorderBrush="{DynamicResource LineStrong}" BorderThickness="1">
+    <StackPanel>
+      <Rectangle Height="3" Fill="{DynamicResource Accent}"/>
+      <StackPanel Margin="26,22,26,24">
+        <StackPanel Orientation="Horizontal">
+          <Border Width="28" Height="28" Background="{DynamicResource Accent}">
+            <TextBlock Text="&#xEA18;" Style="{StaticResource Icon}" FontSize="14" Foreground="{DynamicResource OnAccent}"/>
+          </Border>
+          <TextBlock Text="Token Vault" FontWeight="SemiBold" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource Secondary}"/>
+        </StackPanel>
+
+        <Grid Margin="0,20,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border x:Name="ServerTile" Style="{StaticResource Tile}" Width="48" Height="48">
+            <TextBlock x:Name="ServerInitial" Foreground="#FFFFFF" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
+            <TextBlock x:Name="Heading" Style="{StaticResource Title}"/>
+            <TextBlock x:Name="Detail" Style="{StaticResource Caption}" FontSize="12.5"/>
+          </StackPanel>
+        </Grid>
+
+        <TextBlock Style="{StaticResource Muted}" Margin="0,16,0,0" LineHeight="20"
+                   Text="Minecraft is signing in to this server with your account. If you didn't just choose Join in the game, a mod may be trying to use your account. Choose Block."/>
+        <TextBlock x:Name="Countdown" Style="{StaticResource Caption}" Margin="0,12,0,0"/>
+
+        <Grid Margin="0,20,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Button x:Name="BlockButton" Content="Block" MinHeight="38" IsCancel="True" Click="Block_Click"/>
+          <Button x:Name="JoinButton" Grid.Column="2" Content="Join" Style="{StaticResource Primary}" MinHeight="38" Click="Join_Click"/>
+        </Grid>
+      </StackPanel>
+    </StackPanel>
+  </Border>
+</Window>

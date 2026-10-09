@@ -82,3 +82,15 @@ intentions, unconfigured hosts, redirects, unexpected login packets, oversized o
 malformed frames and forbidden HTTP actions are refused. The client can always be
 disconnected by a malicious mod. A mod can still control the local authenticated
 gameplay stream. Testing must not label this project an all-purpose mod sandbox.
+
+## Saved sign-in encryption (release 1.0)
+
+1. On a PC with a TPM 2.0: sign in, close Token Vault, and check the Security page reports
+   "TPM + DPAPI, AES-256-GCM". Copy `%LOCALAPPDATA%\TokenVault\Data\vault.bin` to another PC or user
+   and confirm Token Vault there asks for a fresh sign-in instead of using it.
+2. On a PC without a TPM (or with it disabled): the Security page reports "DPAPI, AES-256-GCM" and
+   sign-in is remembered across restarts.
+3. With a sign-in saved by an earlier build: start 1.0, confirm no new sign-in is needed, and that the
+   Security page shows the new format after the next token refresh.
+4. Sign out, restore the old `vault.bin` from a copy, start Token Vault: it must ask for a new sign-in
+   (the TPM key was destroyed).

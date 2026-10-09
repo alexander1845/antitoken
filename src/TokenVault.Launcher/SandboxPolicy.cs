@@ -11,6 +11,7 @@ public static class SandboxPolicy
         Configuration.Expand(c.MinecraftDirectory),
         AppPaths.OfficialMinecraft, // the official launcher's sign-in files live in its root
         AppPaths.Data,
+        AppPaths.GameRoot, AppPaths.InstanceRoot, AppPaths.Run, // only specific folders inside these are shared
         AppContext.BaseDirectory,
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -45,6 +46,11 @@ public static class SandboxPolicy
 
     public static string Normalize(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
     public static bool Same(string a, string b) => string.Equals(Normalize(a), Normalize(b), StringComparison.OrdinalIgnoreCase);
-    public static bool IsWithin(string child, string parent) =>
-        Normalize(child).StartsWith(Normalize(parent) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    public static bool IsWithin(string child, string parent)
+    {
+        string p = Normalize(parent);
+        if (!Path.EndsInDirectorySeparator(p)) p += Path.DirectorySeparatorChar; // drive roots already end in one
+        string c = Normalize(child);
+        return c.Length > p.Length && c.StartsWith(p, StringComparison.OrdinalIgnoreCase);
+    }
 }

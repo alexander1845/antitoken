@@ -12,11 +12,21 @@ public interface IConnectionAuthenticator
     Task AuthorizeOwnedConnectionAsync(string serverHash, CancellationToken ct);
 }
 
-// One broker per server the player added in Token Vault. It authenticates only connections to that server.
+// Asks the player (in Token Vault's own window, which the sandboxed game cannot click) whether a join is theirs.
+public delegate Task<bool> JoinApproval(ServerEntry server, CancellationToken ct);
+
+// One broker per server the player added in Token Vault. It authenticates only connections to that server, only
+// one game connection at a time across all brokers (shared slot), and optionally only after the player approves.
+// protocol: the client's network protocol (Minecraft 1.8 = 47 ... 26.1.2 = 775). The login packets differ by version:
+//   1.16 (735)    Login Success carries the UUID as 16 bytes instead of a string
+//   1.19 (759/760) Encryption Response has a "has verify token" flag
+//   1.20.2 (764)  the client acknowledges Login Success before the game starts
+//   1.20.5 (766)  Encryption Request says whether the server authenticates; cookie requests exist
 public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
-    IConnectionAuthenticator authenticator, Action<string> audit)
+    IConnectionAuthenticator authenticator, Action<string> audit, JoinApproval? approve = null, SemaphoreSlim? slot = null,
+    int protocol = 775)
 {
-    private readonly SemaphoreSlim oneConnection = new(1, 1);
+    private readonly SemaphoreSlim oneConnection = slot ?? new(1, 1);
     private long lastLogin;
 
     // Loopback only, on a port Windows picks, so nothing collides with other software.
@@ -49,6 +59,7 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
     {
         using (client)
         {
+            client.NoDelay = true; // small game packets go out at once (Nagle would hold them back and add ping)
             try { await HandleAsync(client.GetStream(), ct); }
             catch (OperationCanceledException) { }
             catch (Exception ex) { audit("broker-denied:" + ex.GetType().Name); }
@@ -62,35 +73,63 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
         var ct = loginDeadline.Token;
         var handshake = await PacketIO.ReadAsync(downstream, -1, ct);
         int offset = 0;
-        if (PacketIO.ReadVarInt(handshake, ref offset) != 0 || PacketIO.ReadVarInt(handshake, ref offset) != 775)
+        if (PacketIO.ReadVarInt(handshake, ref offset) != 0 || PacketIO.ReadVarInt(handshake, ref offset) != protocol || protocol < 47)
             throw new InvalidDataException("Unsupported protocol.");
-        _ = PacketIO.ReadString(handshake, ref offset, 255); // NEVER used to select the upstream destination.
+        // The address the game typed is NEVER used to pick the destination. Only a mod-loader marker after a NUL
+        // (Forge "\0FML2\0"/"\0FML3\0", NeoForge) is carried over, so modded servers recognise the client.
+        string marker = LoaderMarker(PacketIO.ReadString(handshake, ref offset, 255));
         if (offset + 2 > handshake.Length) throw new InvalidDataException("Truncated handshake.");
         offset += 2;
         int state = PacketIO.ReadVarInt(handshake, ref offset);
         PacketIO.RequireEnd(handshake, offset);
-        if (state == 1) { await StatusAsync(downstream, ct); return; }
+        if (state == 1) { await StatusAsync(downstream, marker, ct); return; }
         if (state != 2) throw new InvalidDataException("Unsupported intention (including transfer).");
-        if (!await oneConnection.WaitAsync(0, ct)) throw new InvalidOperationException("A game connection is already active.");
+        if (!await oneConnection.WaitAsync(0, ct))
+        {
+            audit("broker:busy:" + target.Host);
+            throw new InvalidOperationException("A game connection is already active.");
+        }
         try
         {
             long now = Environment.TickCount64;
             if (now - lastLogin < 3000 && lastLogin != 0) throw new InvalidOperationException("Reconnect rate limited.");
             lastLogin = now;
+            // The game's Login Start is checked (it must be this account) and then forwarded as-is, so version-specific
+            // fields such as 1.19's signed profile key reach the server unchanged.
             var start = await PacketIO.ReadAsync(downstream, -1, ct);
-            offset = 0;
-            if (PacketIO.ReadVarInt(start, ref offset) != 0 || PacketIO.ReadString(start, ref offset, 16) != profile.Name ||
-                start.Length - offset != 16 || !start.AsSpan(offset).SequenceEqual(Convert.FromHexString(profile.Id)))
-                throw new InvalidDataException("Wrong local profile.");
-            using var remote = new TcpClient { NoDelay = true };
-            await remote.ConnectAsync(target.Host, target.Port, ct);
-            Stream upstream = remote.GetStream();
+            CheckLoginStart(start);
+            if (approve is not null)
+            {
+                bool approved;
+                using (var answer = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                {
+                    answer.CancelAfter(TimeSpan.FromSeconds(25)); // the game gives up on a login after ~30 s
+                    try { approved = await approve(target, answer.Token); }
+                    catch (OperationCanceledException) when (!lifetime.IsCancellationRequested) { approved = false; }
+                }
+                if (!approved)
+                {
+                    audit("broker:blocked:" + target.Host);
+                    string reason = System.Text.Json.JsonSerializer.Serialize(new { text = "Token Vault blocked this join. Approve it in the Token Vault window to sign in." });
+                    await PacketIO.WriteAsync(downstream, PacketIO.Packet(0, s => PacketIO.WriteString(s, reason)), -1, lifetime);
+                    return;
+                }
+                audit("broker:approved:" + target.Host);
+            }
+            int compression = -1;
+            bool loggedIn = false;
             CipherStream? encrypted = null;
             try
             {
-                await PacketIO.WriteAsync(upstream, PacketIO.Handshake(target.Host, target.Port, 2), -1, ct);
-                await PacketIO.WriteAsync(upstream, PacketIO.LoginStart(profile), -1, ct);
-                int compression = -1;
+                // Same packets the game itself would send: SRV lookup, then the handshake with the address as typed
+                // (1.17+) or as resolved (older versions), then the game's own Login Start.
+                var endpoint = await ServerResolver.ResolveAsync(target, ct);
+                using var remote = new TcpClient { NoDelay = true };
+                await remote.ConnectAsync(endpoint.Host, endpoint.Port, ct);
+                Stream upstream = remote.GetStream();
+                var (handshakeHost, handshakePort) = protocol >= 755 ? (target.Host, target.Port) : (endpoint.Host, endpoint.Port);
+                await PacketIO.WriteAsync(upstream, PacketIO.Handshake(handshakeHost + marker, handshakePort, 2, protocol), -1, ct);
+                await PacketIO.WriteAsync(upstream, start, -1, ct);
                 bool authenticated = false;
                 while (true)
                 {
@@ -103,7 +142,8 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
                         string serverId = PacketIO.ReadString(packet, ref offset, 20);
                         byte[] key = PacketIO.ReadBytes(packet, ref offset, 4096);
                         byte[] verify = PacketIO.ReadBytes(packet, ref offset, 256);
-                        if (offset >= packet.Length || packet[offset++] != 1) throw new InvalidDataException("Upstream must require online authentication.");
+                        if (protocol >= 766 && (offset >= packet.Length || packet[offset++] != 1))
+                            throw new InvalidDataException("Upstream must require online authentication.");
                         PacketIO.RequireEnd(packet, offset);
                         using var rsa = RSA.Create();
                         rsa.ImportSubjectPublicKeyInfo(key, out int read);
@@ -117,12 +157,13 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
                             await PacketIO.WriteAsync(upstream, PacketIO.Packet(1, s =>
                             {
                                 PacketIO.WriteBytes(s, rsa.Encrypt(secret, RSAEncryptionPadding.Pkcs1));
+                                if (protocol is 759 or 760) s.WriteByte(1); // 1.19-1.19.2: "has verify token"
                                 PacketIO.WriteBytes(s, rsa.Encrypt(verify, RSAEncryptionPadding.Pkcs1));
                             }), -1, ct);
                             encrypted = new CipherStream(upstream, secret);
                             upstream = encrypted;
                             authenticated = true;
-                            audit("broker:owned-connection-authenticated");
+                            audit("broker:authenticated:" + target.Host);
                         }
                         finally { CryptographicOperations.ZeroMemory(secret); }
                         continue; // Encryption packet and keys NEVER forwarded to the JVM.
@@ -140,14 +181,23 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
                     if (id == 2)
                     {
                         if (!authenticated) throw new InvalidDataException("Offline-mode upstreams are refused.");
-                        if (packet.Length - offset < 16 || !packet.AsSpan(offset, 16).SequenceEqual(Convert.FromHexString(profile.Id)))
+                        if (protocol >= 735)
+                        {
+                            if (packet.Length - offset < 16 || !packet.AsSpan(offset, 16).SequenceEqual(Convert.FromHexString(profile.Id)))
+                                throw new InvalidDataException("Upstream returned a different account.");
+                            offset += 16;
+                        }
+                        else if (PacketIO.ReadString(packet, ref offset, 36).Replace("-", "") is var uuid && !uuid.Equals(profile.Id, StringComparison.OrdinalIgnoreCase))
                             throw new InvalidDataException("Upstream returned a different account.");
-                        offset += 16;
                         if (PacketIO.ReadString(packet, ref offset, 16) != profile.Name) throw new InvalidDataException("Upstream returned a different name.");
                         await PacketIO.WriteAsync(downstream, packet, compression, ct);
-                        byte[] ack = await PacketIO.ReadAsync(downstream, compression, ct);
-                        if (ack.Length != 1 || ack[0] != 3) throw new InvalidDataException("Expected login acknowledgement.");
-                        await PacketIO.WriteAsync(upstream, ack, compression, ct);
+                        loggedIn = true;
+                        if (protocol >= 764)
+                        {
+                            byte[] ack = await PacketIO.ReadAsync(downstream, compression, ct);
+                            if (ack.Length != 1 || ack[0] != 3) throw new InvalidDataException("Expected login acknowledgement.");
+                            await PacketIO.WriteAsync(upstream, ack, compression, ct);
+                        }
                         loginDeadline.CancelAfter(Timeout.InfiniteTimeSpan);
                         using var relay = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
                         Task outgoing = downstream.CopyToAsync(upstream, 65536, relay.Token);
@@ -157,7 +207,7 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
                         try { await Task.WhenAll(outgoing, incoming); } catch (OperationCanceledException) { }
                         return;
                     }
-                    if (id is 4 or 5)
+                    if ((id == 4 && protocol >= 393) || (id == 5 && protocol >= 766))
                     {
                         // Fabric login plugins / cookies are data, never a generic packet-forwarding API.
                         int transaction = id == 4 ? PacketIO.ReadVarInt(packet, ref offset) : 0;
@@ -173,18 +223,74 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
                     throw new InvalidDataException("Unsupported login packet.");
                 }
             }
+            catch (Exception ex) when (!loggedIn && !lifetime.IsCancellationRequested)
+            {
+                // Tell the player why in the game's own disconnect screen instead of letting it time out.
+                string reason = FailureReason(ex);
+                audit("broker:failed:" + target.Host + ":" + ex.GetType().Name);
+                try
+                {
+                    string json = JsonSerializer.Serialize(new { text = "Token Vault: " + reason });
+                    await PacketIO.WriteAsync(downstream, PacketIO.Packet(0, s => PacketIO.WriteString(s, json)), compression, lifetime);
+                }
+                catch (Exception) when (!lifetime.IsCancellationRequested) { }
+                throw;
+            }
             finally { encrypted?.Dispose(); }
         }
         finally { oneConnection.Release(); }
     }
 
-    private async Task StatusAsync(Stream stream, CancellationToken ct)
+    // Plain-language reasons. No server data or exception text: only the kind of failure.
+    private string FailureReason(Exception ex) => ex switch
+    {
+        SocketException or IOException => $"couldn't connect to {target.Host}. The server may be offline or the address may be wrong.",
+        OperationCanceledException => $"{target.Host} didn't answer in time.",
+        MojangJoinException mojang => mojang.Message,
+        HttpRequestException => "couldn't reach Minecraft's sign-in service. Check your internet connection.",
+        _ when ex.Message == "Upstream must require online authentication." || ex.Message == "Offline-mode upstreams are refused." =>
+            $"{target.Host} is an offline-mode server. Token Vault only signs in to servers that verify accounts.",
+        _ => $"the server sent something unexpected while signing in ({ex.GetType().Name})."
+    };
+
+    // Login Start always begins with the player name. From 1.19.1 it can carry the UUID (always from 1.20.2): it must be ours.
+    private void CheckLoginStart(byte[] start)
+    {
+        int offset = 0;
+        if (PacketIO.ReadVarInt(start, ref offset) != 0 || PacketIO.ReadString(start, ref offset, 16) != profile.Name)
+            throw new InvalidDataException("Wrong local profile.");
+        ReadOnlySpan<byte> id = Convert.FromHexString(profile.Id);
+        if (protocol >= 764)
+        {
+            if (start.Length - offset != 16 || !start.AsSpan(offset).SequenceEqual(id)) throw new InvalidDataException("Wrong local profile.");
+        }
+        else if (protocol is >= 761 and <= 763)
+        {
+            if (offset >= start.Length) throw new InvalidDataException("Truncated login.");
+            bool hasId = start[offset++] == 1;
+            if (hasId && (start.Length - offset != 16 || !start.AsSpan(offset).SequenceEqual(id))) throw new InvalidDataException("Wrong local profile.");
+            if (!hasId && offset != start.Length) throw new InvalidDataException("Unexpected login fields.");
+        }
+        else if (protocol < 759 && offset != start.Length) throw new InvalidDataException("Unexpected login fields.");
+        // 1.19/1.19.2 (759/760): signed profile-key data (and on 760 an optional UUID) follow; the server verifies them.
+        if (start.Length > 4096) throw new InvalidDataException("Login Start too large.");
+    }
+
+    public static string LoaderMarker(string host)
+    {
+        int nul = host.IndexOf('\0');
+        if (nul < 0) return "";
+        string marker = host[nul..];
+        return marker.Length <= 32 && marker.All(ch => ch == '\0' || char.IsAsciiLetterOrDigit(ch)) ? marker : "";
+    }
+
+    private async Task StatusAsync(Stream stream, string marker, CancellationToken ct)
     {
         byte[] request = await PacketIO.ReadAsync(stream, -1, ct);
         if (request.Length != 1 || request[0] != 0) throw new InvalidDataException("Invalid status request.");
-        byte[] response = await UpstreamStatusAsync(ct) ?? PacketIO.Packet(0, s => PacketIO.WriteString(s, JsonSerializer.Serialize(new
+        byte[] response = await UpstreamStatusAsync(marker, ct) ?? PacketIO.Packet(0, s => PacketIO.WriteString(s, JsonSerializer.Serialize(new
         {
-            version = new { name = "26.1.2", protocol = 775 },
+            version = new { name = "Token Vault", protocol },
             players = new { max = 0, online = 0 },
             description = new { text = target.Name + " (could not reach the server)" }
         })));
@@ -194,16 +300,18 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
     }
 
     // Server-list ping (MOTD, player count). Unauthenticated and unencrypted; only the response packet is relayed.
-    private async Task<byte[]?> UpstreamStatusAsync(CancellationToken lifetime)
+    private async Task<byte[]?> UpstreamStatusAsync(string marker, CancellationToken lifetime)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
         deadline.CancelAfter(TimeSpan.FromSeconds(5));
         try
         {
+            var endpoint = await ServerResolver.ResolveAsync(target, deadline.Token);
             using var remote = new TcpClient { NoDelay = true };
-            await remote.ConnectAsync(target.Host, target.Port, deadline.Token);
+            await remote.ConnectAsync(endpoint.Host, endpoint.Port, deadline.Token);
             var upstream = remote.GetStream();
-            await PacketIO.WriteAsync(upstream, PacketIO.Handshake(target.Host, target.Port, 1), -1, deadline.Token);
+            var (host, port) = protocol >= 755 ? (target.Host, target.Port) : (endpoint.Host, endpoint.Port);
+            await PacketIO.WriteAsync(upstream, PacketIO.Handshake(host + marker, port, 1, protocol), -1, deadline.Token);
             await PacketIO.WriteAsync(upstream, [0], -1, deadline.Token);
             byte[] response = await PacketIO.ReadAsync(upstream, -1, deadline.Token);
             int offset = 0;

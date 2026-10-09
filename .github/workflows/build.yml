@@ -1,5 +1,7 @@
 name: Build and security regression tests
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
 permissions:
   contents: read
 jobs:
@@ -8,6 +10,8 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    env: # only whether a certificate exists; the secrets themselves stay in the signing step
+      HAS_SIGNING_CERT: ${{ secrets.SIGNING_CERT_PFX_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -17,9 +21,43 @@ jobs:
       - run: dotnet build TokenVault.sln -c Release --no-restore
       - run: dotnet run --project tests/TokenVault.Tests -c Release --no-build
       - if: runner.os == 'Windows'
-        run: dotnet publish src/TokenVault.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/TokenVault
+        run: dotnet publish src/TokenVault.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o artifacts/TokenVault
+      # Authenticode signing, only when a certificate is configured as repository secrets:
+      #   SIGNING_CERT_PFX_BASE64  base64 of the .pfx   SIGNING_CERT_PASSWORD  its password
+      # Signed builds stop Windows SmartScreen from naming an "unknown publisher". See README, "Windows warning".
+      - if: runner.os == 'Windows' && env.HAS_SIGNING_CERT == 'true'
+        env:
+          SIGNING_CERT_PFX_BASE64: ${{ secrets.SIGNING_CERT_PFX_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_CERT_PFX_BASE64))
+          try {
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+            & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:SIGNING_CERT_PASSWORD artifacts/TokenVault/TokenVault.exe
+            if ($LASTEXITCODE -ne 0) { throw 'Signing failed' }
+          } finally { Remove-Item $pfx -Force }
       - if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: TokenVault-win-x64
           path: artifacts/TokenVault
+
+  # Pushing a tag such as v1.0.0 publishes a GitHub release with the Windows build attached.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: TokenVault-win-x64
+          path: TokenVault
+      - run: zip -r TokenVault-win-x64.zip TokenVault
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: TokenVault-win-x64.zip
+          generate_release_notes: true
