@@ -475,7 +475,7 @@ public partial class MainWindow : Window
             : network == true ? "Approved: the sandbox can reach Token Vault on this PC and see top-level folder names."
             : "Needed once: Windows asks an administrator to let the sandbox reach Token Vault on this PC.";
         SavedDetail.Text = identity is not null ? $"Signed in as {identity.Profile.Name}. Sign out to remove it from this PC."
-            : saved ? "A sign-in is saved on this PC. Sign out to remove it." : "Nothing saved on this PC.";
+            : saved ? $"A sign-in is saved on this PC, encrypted with {RefreshCache.Protection(AppPaths.RefreshCache)}. Sign out to remove it." : "Nothing saved on this PC.";
         ForgetButton.IsEnabled = !busy && (identity is not null || saved);
 
         var issues = new List<string>();

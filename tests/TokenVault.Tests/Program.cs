@@ -38,6 +38,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("packet framing, compression bounds and malformed VarInts", PacketTests),
     ("Minecraft signed SHA-1 and continuous AES-CFB8", CryptoTests),
     ("fake JWT uniqueness and refresh-only cache serialization", TokenTests),
+    ("envelope encryption: AES-256-GCM, header/context binding, tamper and key checks", EnvelopeTests),
     ("OAuth loopback rejects wrong state and requires PKCE", OAuthCallbackTests),
     ("API deny ceiling, TLS, token substitution and response non-disclosure", HttpTests),
     ("owned online login, Fabric query, compression and encrypted relay", BrokerTests),
@@ -103,6 +104,49 @@ static async Task CryptoTests()
     using var decrypt = new CipherStream(bytes, key); byte[] restored = new byte[64];
     await decrypt.ReadExactlyAsync(restored.AsMemory(0, 7)); await decrypt.ReadExactlyAsync(restored.AsMemory(7));
     Check(restored.SequenceEqual(plain), "Continuous CFB8 decryption mismatch.");
+}
+
+static Task EnvelopeTests()
+{
+    // Unauthenticated test wrap (XOR pad): any change to the wrapped key yields a different DEK, which GCM must catch.
+    var wrap = new XorWrap(7);
+    byte[] secret = Encoding.UTF8.GetBytes("refresh-canary " + new string('x', 300));
+    byte[] a = Envelope.Seal(secret, "ctx|S-1-5-21-1", wrap), b = Envelope.Seal(secret, "ctx|S-1-5-21-1", wrap);
+    Check(Envelope.IsEnvelope(a) && a.AsSpan().IndexOf("refresh-canary"u8) < 0, "Plaintext visible in envelope.");
+    Check(!a.SequenceEqual(b), "Two seals of the same data must differ (fresh DEK and nonce).");
+    Check(Envelope.Open(a, "ctx|S-1-5-21-1", id => id == 7 ? wrap : null).SequenceEqual(secret), "Envelope roundtrip failed.");
+    // Every single-byte change anywhere (magic, version, wrap id, length, wrapped key, nonce, ciphertext, tag) is refused.
+    for (int i = 0; i < a.Length; i++)
+    {
+        byte[] tampered = a.ToArray(); tampered[i] ^= 0x01;
+        bool opened = false;
+        try { Envelope.Open(tampered, "ctx|S-1-5-21-1", id => id == 7 ? wrap : null); opened = true; }
+        catch (CryptographicException) { }
+        catch (ArgumentException) { } // a corrupted length can make the layout invalid
+        Check(!opened, $"Tampered byte {i} was accepted.");
+    }
+    Check(ThrowsCrypto(() => Envelope.Open(a, "ctx|S-1-5-21-2", id => wrap)), "Envelope opened under another user's context.");
+    Check(ThrowsCrypto(() => Envelope.Open(a, "ctx|S-1-5-21-1", id => null)), "Envelope opened without its key wrap.");
+    Check(ThrowsCrypto(() => Envelope.Open(a[..20], "ctx|S-1-5-21-1", id => wrap)), "Truncated envelope accepted.");
+    Check(Envelope.Open(Envelope.Seal([], "c", wrap), "c", _ => wrap).Length == 0, "Empty plaintext roundtrip failed.");
+    WindowsKeyWrapTests(secret);
+    return Task.CompletedTask;
+}
+
+static void WindowsKeyWrapTests(byte[] secret)
+{
+    if (!OperatingSystem.IsWindows()) return;
+    var dpapi = new DpapiKeyWrap("TokenVault.Tests"u8.ToArray());
+    Check(Envelope.Open(Envelope.Seal(secret, "c", dpapi), "c", id => id == DpapiKeyWrap.WrapId ? dpapi : null).SequenceEqual(secret), "DPAPI envelope roundtrip failed.");
+    // TPM-bound wrapping only where the runner has a TPM; CI runners usually don't, which exercises the fallback.
+    Console.WriteLine(TpmKeyWrap.TryOpen(dpapi, create: false) is { } tpm
+        ? (Envelope.Open(Envelope.Seal(secret, "c", tpm), "c", _ => tpm).SequenceEqual(secret) ? "     (TPM-bound wrap verified)" : throw new Exception("TPM roundtrip failed."))
+        : "     (no existing TPM key on this machine; DPAPI path verified)");
+}
+
+static bool ThrowsCrypto(Action action)
+{
+    try { action(); return false; } catch (CryptographicException) { return true; }
 }
 
 static async Task TokenTests()
@@ -451,4 +495,12 @@ sealed class MockAuthenticator(TaskCompletionSource<string> completion) : IConne
     public int Calls;
     public Task AuthorizeOwnedConnectionAsync(string serverHash, CancellationToken ct)
     { Calls++; completion.TrySetResult(serverHash); return Task.CompletedTask; }
+}
+
+sealed class XorWrap(byte id) : IKeyWrap
+{
+    private static readonly byte[] Pad = RandomNumberGenerator.GetBytes(32);
+    public byte Id => id;
+    public byte[] Wrap(byte[] key) => key.Select((b, i) => (byte)(b ^ Pad[i % 32])).ToArray();
+    public byte[] Unwrap(byte[] wrapped) => Wrap(wrapped);
 }
