@@ -706,7 +706,14 @@ public partial class MainWindow : Window
         ActivityLog.ScrollToEnd();
     }
 
-    private void Error(Exception ex) => Error(Describe(ex));
+    private void Error(Exception ex)
+    {
+        Error(Describe(ex));
+        // Where it failed (code locations only, no data) goes to the activity log to help with bug reports.
+        if (ex is not (UserVisibleException or OperationCanceledException) && ex.StackTrace is { } trace)
+            Log($"Details: {ex.GetType().Name} at " + string.Join(" < ", trace.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Take(4).Select(l => l.StartsWith("at ", StringComparison.Ordinal) ? l[3..].Split(" in ")[0] : l)));
+    }
 
     private void Error(string message)
     {
@@ -734,6 +741,8 @@ public partial class MainWindow : Window
             "Another program is using Token Vault's local ports (25597 or 25599). Close it and try again.",
         System.Net.Http.HttpRequestException => "Couldn't reach the internet. Check your connection and try again.",
         UnauthorizedAccessException => "Windows denied access to a file Token Vault needs.",
+        // Windows' own error text describes the failure, not the request, so it is safe to show.
+        System.ComponentModel.Win32Exception win32 => $"Windows reported an error: {win32.Message} (error {win32.NativeErrorCode}).",
         _ => $"Something unexpected went wrong ({ex.GetType().Name}). Try again."
     };
 

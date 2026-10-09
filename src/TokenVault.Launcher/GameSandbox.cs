@@ -78,6 +78,7 @@ public sealed class GameSandbox
             if (process is not null) await process.WaitForExitAsync();
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 1223) { return false; } // user declined the UAC prompt
+        catch (Win32Exception ex) { throw Failed("ask Windows for administrator approval", ex.NativeErrorCode); }
         return IsSetUp() != false;
     }
 
@@ -153,13 +154,13 @@ public sealed class GameSandbox
     private static void SetLowIntegrityLabel(string directory)
     {
         if (!ConvertStringSecurityDescriptorToSecurityDescriptorW("S:(ML;OICI;NW;;;LW)", 1, out IntPtr descriptor, IntPtr.Zero))
-            throw new Win32Exception();
+            throw Failed("prepare a folder for the sandbox");
         try
         {
-            if (!GetSecurityDescriptorSacl(descriptor, out _, out IntPtr sacl, out _)) throw new Win32Exception();
+            if (!GetSecurityDescriptorSacl(descriptor, out _, out IntPtr sacl, out _)) throw Failed("prepare a folder for the sandbox");
             uint error = SetNamedSecurityInfoW(directory, 1 /* SE_FILE_OBJECT */, 0x10 /* LABEL_SECURITY_INFORMATION */,
                 IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, sacl);
-            if (error != 0) throw new Win32Exception((int)error);
+            if (error != 0) throw Failed("let the sandbox write to " + directory, (int)error);
         }
         finally { LocalFree(descriptor); }
     }
@@ -179,7 +180,7 @@ public sealed class GameSandbox
         try
         {
             // internetClient only: outbound internet (skins, resource packs). No inbound, no LAN server role.
-            if (!ConvertStringSidToSidW(InternetClientCapability, out capability)) throw new Win32Exception();
+            if (!ConvertStringSidToSidW(InternetClientCapability, out capability)) throw Failed("set up the sandbox");
             capabilities = Marshal.AllocHGlobal(Marshal.SizeOf<SidAndAttributes>());
             Marshal.StructureToPtr(new SidAndAttributes { Sid = capability, Attributes = 0x4 /* SE_GROUP_ENABLED */ }, capabilities, false);
             securityCapabilities = Marshal.AllocHGlobal(Marshal.SizeOf<SecurityCapabilities>());
@@ -190,21 +191,21 @@ public sealed class GameSandbox
             int attributeCount = output is null ? 1 : 2;
             InitializeProcThreadAttributeList(IntPtr.Zero, attributeCount, 0, ref size);
             attributes = Marshal.AllocHGlobal(size);
-            if (!InitializeProcThreadAttributeList(attributes, attributeCount, 0, ref size)) throw new Win32Exception();
+            if (!InitializeProcThreadAttributeList(attributes, attributeCount, 0, ref size)) throw Failed("set up the sandbox");
             attributesInitialized = true;
             if (!UpdateProcThreadAttribute(attributes, 0, (IntPtr)0x00020009 /* SECURITY_CAPABILITIES */, securityCapabilities,
                     (IntPtr)Marshal.SizeOf<SecurityCapabilities>(), IntPtr.Zero, IntPtr.Zero))
-                throw new Win32Exception();
+                throw Failed("set up the sandbox");
 
             var startup = new StartupInfoEx { Attributes = attributes };
             startup.StartupInfo.cb = Marshal.SizeOf<StartupInfoEx>();
             if (output is not null)
             {
-                if (!SetHandleInformation(output, 1 /* HANDLE_FLAG_INHERIT */, 1)) throw new Win32Exception();
+                if (!SetHandleInformation(output, 1 /* HANDLE_FLAG_INHERIT */, 1)) throw Failed("set up the game log");
                 handleList = Marshal.AllocHGlobal(IntPtr.Size);
                 Marshal.WriteIntPtr(handleList, output.DangerousGetHandle());
                 if (!UpdateProcThreadAttribute(attributes, 0, (IntPtr)0x00020002 /* HANDLE_LIST */, handleList, IntPtr.Size, IntPtr.Zero, IntPtr.Zero))
-                    throw new Win32Exception();
+                    throw Failed("set up the game log");
                 startup.StartupInfo.Flags = 0x100; // STARTF_USESTDHANDLES
                 startup.StartupInfo.StdOutput = startup.StartupInfo.StdError = output.DangerousGetHandle();
             }
@@ -213,18 +214,31 @@ public sealed class GameSandbox
             var commandLine = new System.Text.StringBuilder(WindowsCommandLine.Build(executable, arguments));
             const uint flags = 0x00080000 /* EXTENDED_STARTUPINFO_PRESENT */ | 0x4 /* CREATE_SUSPENDED */ |
                                0x400 /* CREATE_UNICODE_ENVIRONMENT */ | 0x08000000 /* CREATE_NO_WINDOW */;
+            const uint breakaway = 0x01000000; // CREATE_BREAKAWAY_FROM_JOB
+            // Token Vault itself may run inside a job (some shells, browsers and game clients start programs in one).
+            // The game then leaves that job when allowed, so it can be put in its own restricted job below; otherwise
+            // Windows nests our job inside the inherited one.
+            bool inJob = IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out bool member) && member;
             // Inheritance is limited by HANDLE_LIST to the output file; without one, nothing is inherited.
-            if (!CreateProcessW(executable, commandLine, IntPtr.Zero, IntPtr.Zero, output is not null, flags, environmentBlock,
-                    workingDirectory, ref startup, out ProcessInformation process))
-                throw new Win32Exception();
+            ProcessInformation process;
+            bool created = CreateProcessW(executable, new System.Text.StringBuilder(commandLine.ToString()), IntPtr.Zero, IntPtr.Zero,
+                output is not null, flags | (inJob ? breakaway : 0), environmentBlock, workingDirectory, ref startup, out process);
+            int error = created ? 0 : Marshal.GetLastWin32Error();
+            if (!created && inJob && error == 5 /* breakaway not allowed */)
+            {
+                created = CreateProcessW(executable, commandLine, IntPtr.Zero, IntPtr.Zero, output is not null, flags, environmentBlock,
+                    workingDirectory, ref startup, out process);
+                error = created ? 0 : Marshal.GetLastWin32Error();
+            }
+            if (!created) throw Failed("start Java in the sandbox", error);
             var processHandle = new SafeProcessHandle(process.Process, ownsHandle: true);
             using var thread = new SafeProcessHandle(process.Thread, ownsHandle: true);
             SafeJobHandle? job = null;
             try
             {
                 job = CreateJob(allowClipboard);
-                if (!AssignProcessToJobObject(job, processHandle)) throw new Win32Exception();
-                if (ResumeThread(thread) == uint.MaxValue) throw new Win32Exception();
+                if (!AssignProcessToJobObject(job, processHandle)) throw Failed("put the game in its sandbox job");
+                if (ResumeThread(thread) == uint.MaxValue) throw Failed("start the game");
                 return new SandboxedProcess(processHandle, job);
             }
             catch
@@ -251,7 +265,7 @@ public sealed class GameSandbox
     private static SafeJobHandle CreateJob(bool allowClipboard)
     {
         var job = CreateJobObjectW(IntPtr.Zero, null);
-        if (job.IsInvalid) throw new Win32Exception();
+        if (job.IsInvalid) throw Failed("create the sandbox job");
         // Everything the game starts stays in the job and dies with it (or with Token Vault).
         var limits = new JobExtendedLimitInformation();
         limits.Basic.LimitFlags = 0x2000 /* KILL_ON_JOB_CLOSE */ | 0x400 /* DIE_ON_UNHANDLED_EXCEPTION */;
@@ -261,11 +275,19 @@ public sealed class GameSandbox
         if (!SetInformationJobObject(job, 9 /* ExtendedLimitInformation */, ref limits, Marshal.SizeOf<JobExtendedLimitInformation>()) ||
             !SetInformationJobObject(job, 4 /* BasicUIRestrictions */, ref ui, sizeof(uint)))
         {
-            var error = new Win32Exception();
+            var error = Failed("restrict the sandbox job");
             job.Dispose();
             throw error;
         }
         return job;
+    }
+
+    // Windows' own description of the error (no paths or account data), plus the step that failed.
+    private static UserVisibleException Failed(string step, int error = 0)
+    {
+        if (error == 0) error = Marshal.GetLastWin32Error();
+        string hint = error is 5 or 1260 ? " Security software or a company policy may be blocking it." : "";
+        return new UserVisibleException($"Couldn't {step}: {new Win32Exception(error).Message} (Windows error {error}).{hint}");
     }
 
     [StructLayout(LayoutKind.Sequential)] private struct SidAndAttributes { public IntPtr Sid; public uint Attributes; }
@@ -326,6 +348,8 @@ public sealed class GameSandbox
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint ResumeThread(SafeProcessHandle thread);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetHandleInformation(SafeFileHandle handle, uint mask, uint flags);
     [DllImport("kernel32.dll", SetLastError = true)] internal static extern bool TerminateProcess(SafeProcessHandle process, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
 }
 
 [SupportedOSPlatform("windows")]

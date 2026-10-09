@@ -61,9 +61,23 @@ public sealed class SystemBrowserUi(int port, Func<Uri, Task>? openBrowserForTes
         try
         {
             if (openBrowserForTest is not null) await openBrowserForTest(authorizationUri);
-            else Process.Start(new ProcessStartInfo(authorizationUri.AbsoluteUri) { UseShellExecute = true })?.Dispose();
+            else OpenBrowser(authorizationUri);
             return await completed.Task.WaitAsync(deadline.Token);
         }
         finally { await app.StopAsync(CancellationToken.None); }
+    }
+
+    // Opens the default browser. Some PCs have a broken "https" association, so Explorer is asked as a fallback.
+    private static void OpenBrowser(Uri page)
+    {
+        try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true })?.Dispose(); }
+        catch (System.ComponentModel.Win32Exception) when (OperatingSystem.IsWindows())
+        {
+            try { Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe")) { ArgumentList = { page.AbsoluteUri } })?.Dispose(); }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                throw new UserVisibleException("Windows couldn't open your web browser for sign-in. Turn on \"Sign in with a code\" in Settings and try again.");
+            }
+        }
     }
 }
