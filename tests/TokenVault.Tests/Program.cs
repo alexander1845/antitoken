@@ -278,6 +278,8 @@ static async Task OfflineTests()
         await PacketIO.WriteAsync(server.GetStream(), PacketIO.Packet(2), -1, ct);
         await Throws<InvalidDataException>(() => handling);
         Check(auth.Calls == 0, "Offline server obtained authentication.");
+        byte[] reason = await PacketIO.ReadAsync(game.GetStream(), -1, ct);
+        Check(reason.Length > 1 && reason[0] == 0, "The game was not told why the join failed.");
     }
     finally { remote.Stop(); local.Stop(); }
 }
