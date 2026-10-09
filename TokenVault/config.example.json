@@ -1,0 +1,29 @@
+{
+  "ClientId": "REPLACE_WITH_YOUR_APPROVED_APPLICATION_ID",
+  "OAuthPort": 25597,
+  "HttpsPort": 25599,
+  "GamePort": 25598,
+  "PipeName": "TokenVault.Session.v1",
+  "HardeningMode": "separate-user",
+  "GameUserSid": "SET_BY_SETUP",
+  "VaultUserSid": "SET_BY_SETUP",
+  "DataDirectory": "C:/ProgramData/TokenVault/Data",
+  "ServerHost": "SET_YOUR_SERVER_HOST",
+  "ServerPort": 25565,
+  "MinecraftVersion": "26.1.2",
+  "FabricVersion": "0.19.5",
+  "FabricProfile": "fabric-loader-0.19.5-26.1.2",
+  "MinecraftDirectory": "%APPDATA%/.minecraft",
+  "GameDirectory": "%APPDATA%/.minecraft",
+  "ModsDirectory": "%APPDATA%/.minecraft/mods",
+  "JavaPath": "C:/Program Files/Eclipse Adoptium/jdk-25/bin/java.exe",
+  "KeytoolPath": "C:/Program Files/Eclipse Adoptium/jdk-25/bin/keytool.exe",
+  "MemoryMb": 4096,
+  "SessionMinutes": 120,
+  "ObserveDeniedEndpoints": true,
+  "Allowlist": [
+    "GET /services/player/attributes",
+    "POST /services/player/certificates",
+    "GET /services/publickeys"
+  ]
+}

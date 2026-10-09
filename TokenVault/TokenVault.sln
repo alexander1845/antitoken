@@ -1,0 +1,34 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TokenVault.Core", "src\TokenVault.Core\TokenVault.Core.csproj", "{2F784B97-4887-4131-8366-BE74203BDFFE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TokenVault.Vault", "src\TokenVault.Vault\TokenVault.Vault.csproj", "{3DED0CD4-8B4E-4777-91A9-479B9D59261B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TokenVault.Launcher", "src\TokenVault.Launcher\TokenVault.Launcher.csproj", "{E32DE083-3BFA-4168-A0ED-E6D88B73D0E1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TokenVault.Tests", "tests\TokenVault.Tests\TokenVault.Tests.csproj", "{BD735E7C-781F-45AA-BEF3-D561CEC829D4}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2F784B97-4887-4131-8366-BE74203BDFFE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2F784B97-4887-4131-8366-BE74203BDFFE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2F784B97-4887-4131-8366-BE74203BDFFE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2F784B97-4887-4131-8366-BE74203BDFFE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3DED0CD4-8B4E-4777-91A9-479B9D59261B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3DED0CD4-8B4E-4777-91A9-479B9D59261B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3DED0CD4-8B4E-4777-91A9-479B9D59261B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3DED0CD4-8B4E-4777-91A9-479B9D59261B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E32DE083-3BFA-4168-A0ED-E6D88B73D0E1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E32DE083-3BFA-4168-A0ED-E6D88B73D0E1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E32DE083-3BFA-4168-A0ED-E6D88B73D0E1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E32DE083-3BFA-4168-A0ED-E6D88B73D0E1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BD735E7C-781F-45AA-BEF3-D561CEC829D4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BD735E7C-781F-45AA-BEF3-D561CEC829D4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BD735E7C-781F-45AA-BEF3-D561CEC829D4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BD735E7C-781F-45AA-BEF3-D561CEC829D4}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,78 @@
+# Acceptance gates
+
+Use a test account/server you control. Never paste a real credential into a shell,
+issue, transcript, log or bug report. This repository has no public secret-dump API.
+
+## Automated, no account required
+
+`dotnet run --project tests/TokenVault.Tests -c Release` checks framing/compression
+bounds, signed hashes, continuous AES-CFB8, fake JWTs, the refresh-only cache filter,
+TLS API denial/substitution/non-disclosure, Fabric login query forwarding, online
+broker encryption/relay and offline-server refusal.
+
+The mock server owns an RSA private key and verifies that the join hash uses the
+same fresh secret delivered in that exact upstream connection. The mock JVM sees
+compression/login success, never the upstream encryption request. An independent
+AES-CFB8 vector checks the stream implementation. These are regression tests, not a
+substitute for a Minecraft account, client UI, Windows ACL or server compatibility test.
+
+The test executable's `--probe-fixture <temporary-directory>` mode starts the real
+HTTPS boundary backed by a synthetic upstream. It writes only a public certificate,
+and emits a synthetic fake token to the coordinator's anonymous stdout pipe. It
+stops when `<temporary-directory>/stop` exists. This is test code only, not a mode
+in the production vault.
+
+## Windows/live-account checks still required
+
+1. **Actual launch and online join.** Build on Windows, provision the isolated
+   account, configure an approved app, install 26.1.2 Fabric, and launch against an
+   online-mode server you control. Check signed chat, required mod/plugin handshakes,
+   disconnect/reconnect and the configured mods folder. No real-token fallback is allowed.
+2. **Credential boundary.** In an isolated test harness, inspect JVM command line,
+   environment, pipe descriptor and memory for an instrumented canary; inspect the
+   launcher too. For real-token memory auditing, use a private debugger/harness that
+   compares in memory without persisting/printing the credential. A grep of one heap
+   dump alone does not prove absence from every native buffer or OS dump.
+3. **Direct authentication fails.** Connect the fake-token client **directly to the
+   original server**, with Authlib configured back to production and an ordinary
+   public-CA truststore. Its fake-token join must be rejected. Changing only the
+   Authlib hosts while continuing to use the authorized broker is not an appropriate
+   negative test: the broker independently owns/authenticates its upstream connection.
+4. **Forbidden actions.** Send PUT name-change, POST skin-change and both documented
+   POST join paths to the vault. All return 403 even with the correct fake credential.
+   Requests with a real token are not a special privileged path and also cannot join.
+   Example non-authenticated denial checks (public certificate exported for testing):
+
+   ```powershell
+   curl.exe --cacert vault.pem -X POST https://127.0.0.1:25599/session/minecraft/join
+   curl.exe --cacert vault.pem -X PUT https://127.0.0.1:25599/services/minecraft/profile/name/Test
+   curl.exe --cacert vault.pem -X POST https://127.0.0.1:25599/services/minecraft/profile/skins
+   ```
+
+   Do not use `-k` in a test of TLS validation. In the production flow the launcher
+   builds the truststore automatically; it never exports the private certificate key.
+5. **Fake rejected by Mojang.** Submit only a synthetic fake token to the public join
+   API in a controlled test. Expect failure; never use a live token as a CLI argument.
+6. **Remote hash relay rejected.** Begin a second test client's handshake. Submit its
+   hash to the vault through all join aliases, including with the legitimate fake
+   bearer. They must return 403 and make zero outbound authentication calls. Only a
+   connection freshly created by the broker can invoke its internal authenticator.
+7. **Isolation.** As the gaming account, attempt to read `vault.bin` and the vault
+   process memory; both must fail in isolated mode. Attempt to replace its executable,
+   configuration, DLLs, data directory and ancestor directories. Verify failure. Check
+   the named pipe cannot be read via a network logon or spoofed by another account.
+8. **At rest.** After shutdown, inspect the vault's DPAPI plaintext with a dedicated
+   test harness under the vault identity: the MSAL AccessToken and IdToken buckets
+   must be empty, while RefreshToken and necessary account metadata remain. Check
+   requests.log contains no credentials. Do not persist the decrypted data.
+9. **Stop/expiry.** Close the vault and test expiry with a short session: API listeners,
+   named pipe and active broker connection must close. No already authenticated
+   connection should survive the host process shutting down.
+
+## Expected failures / supported scope
+
+Unknown Minecraft/Authlib versions, offline upstreams, server-transfer login
+intentions, unconfigured hosts, redirects, unexpected login packets, oversized or
+malformed frames and forbidden HTTP actions are refused. The client can always be
+disconnected by a malicious mod. A mod can still control the local authenticated
+gameplay stream. Testing must not label this project an all-purpose mod sandbox.
