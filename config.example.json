@@ -13,6 +13,7 @@
   "MemoryMb": 4096,
   "SessionMinutes": 240,
   "AllowClipboard": false,
+  "ConfirmJoins": true,
   "RememberSignIn": true,
   "ObserveDeniedEndpoints": false,
   "Allowlist": [

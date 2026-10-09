@@ -24,7 +24,9 @@ public sealed class VaultSession : IAsyncDisposable
         this.http = http; this.log = log; Descriptor = descriptor;
     }
 
-    public static async Task<VaultSession> StartAsync(Configuration config, MinecraftIdentity identity, string auditPath, CancellationToken stop)
+    // observe receives the same sanitized classifications as the audit log (no tokens, bodies or hashes).
+    public static async Task<VaultSession> StartAsync(Configuration config, MinecraftIdentity identity, string auditPath, CancellationToken stop,
+        Action<string>? observe = null, JoinApproval? approve = null)
     {
         DateTimeOffset expires = new[] { identity.ExpiresAt.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(config.SessionMinutes) }.Min();
         if (expires <= DateTimeOffset.UtcNow) throw new UserVisibleException("Sign-in expires too soon. Sign out and sign in again.");
@@ -37,16 +39,19 @@ public sealed class VaultSession : IAsyncDisposable
         try
         {
             string fake = FakeToken.Create(identity.Profile, expires);
-            app = new HttpsVault(config, identity, fake, cert, http, log.Write).Create();
+            void Audit(string message) { log.Write(message); observe?.Invoke(message); }
+            app = new HttpsVault(config, identity, fake, cert, http, Audit).Create();
             await app.StartAsync(lifetime.Token);
             var authenticator = new MojangConnectionAuthenticator(http, identity);
             var servers = new List<LocalServer>();
+            var slot = new SemaphoreSlim(1, 1); // one game connection at a time, across every server
             var brokers = new List<Task>();
             foreach (var server in config.Servers)
             {
                 var listener = ConnectionBroker.Listen();
                 servers.Add(new LocalServer(server.Name, ((System.Net.IPEndPoint)listener.LocalEndpoint).Port));
-                brokers.Add(new ConnectionBroker(server, identity.Profile, authenticator, log.Write).RunAsync(listener, lifetime.Token));
+                brokers.Add(new ConnectionBroker(server, identity.Profile, authenticator, Audit, config.ConfirmJoins ? approve : null, slot)
+                    .RunAsync(listener, lifetime.Token));
             }
             Task networking = Task.WhenAll(brokers);
             var descriptor = new SessionDescriptor(identity.Profile, fake, Convert.ToBase64String(cert.Export(X509ContentType.Cert)),

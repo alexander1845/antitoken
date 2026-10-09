@@ -1,0 +1,25 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- Dark palette -->
+  <SolidColorBrush x:Key="Bg" Color="#121214"/>
+  <SolidColorBrush x:Key="Nav" Color="#18181B"/>
+  <SolidColorBrush x:Key="Surface" Color="#18181B"/>
+  <SolidColorBrush x:Key="Raised" Color="#1E1E22"/>
+  <SolidColorBrush x:Key="Hover" Color="#232328"/>
+  <SolidColorBrush x:Key="Selected" Color="#2A2A30"/>
+  <SolidColorBrush x:Key="Line" Color="#27272C"/>
+  <SolidColorBrush x:Key="LineStrong" Color="#36363D"/>
+  <SolidColorBrush x:Key="Text" Color="#EDEDF0"/>
+  <SolidColorBrush x:Key="Secondary" Color="#A1A1AA"/>
+  <SolidColorBrush x:Key="Tertiary" Color="#71717A"/>
+  <SolidColorBrush x:Key="Accent" Color="#34C46E"/>
+  <SolidColorBrush x:Key="AccentHover" Color="#47D17F"/>
+  <SolidColorBrush x:Key="AccentTint" Color="#14261B"/>
+  <SolidColorBrush x:Key="OnAccent" Color="#06140B"/>
+  <SolidColorBrush x:Key="Good" Color="#34C46E"/>
+  <SolidColorBrush x:Key="Warn" Color="#F2A43A"/>
+  <SolidColorBrush x:Key="WarnTint" Color="#2A2114"/>
+  <SolidColorBrush x:Key="Bad" Color="#F2555A"/>
+  <SolidColorBrush x:Key="BadTint" Color="#2C1618"/>
+  <SolidColorBrush x:Key="Scrim" Color="#99000000"/>
+</ResourceDictionary>

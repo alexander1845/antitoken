@@ -61,7 +61,13 @@ official launcher, no app registration needed to test.
 
    A job object makes everything the game starts die with it, or with Token Vault.
    Microsoft treats AppContainer escapes as security-boundary bugs and fixes them in Windows Update.
-4. **Sign-in never overlaps a running game.** The browser sign-in happens before launch. Sign-in and
+4. **You approve every server join (on by default).** When anything connects to a server as you,
+   Token Vault shows its own always-on-top prompt: "Join Hypixel as Steve?". Windows' UIPI stops the
+   sandboxed game from clicking it or typing into it, and Block is the default. Escape, closing
+   the window and the 25-second timeout all block. Only one server connection can exist at a time,
+   across all servers, so nothing can run a hidden second session next to yours. The Security page
+   lists every approved or blocked join and every blocked account request.
+5. **Sign-in never overlaps a running game.** The browser sign-in happens before launch. Sign-in and
    sign-out are disabled while the game runs, so no mod is alive during the OAuth flow.
 
 ### One-time admin prompt (not an account)
@@ -74,6 +80,10 @@ creates no account, starts no service, and changes no other setting. To undo it:
 
 ## What it does NOT protect against (honest limits)
 
+* **Valuable servers (e.g. Hypixel).** With join approval on, a mod can't quietly sign in to a
+  server on your list while you're doing something else; you'd get a prompt you didn't expect.
+  But once *you* join and play, a malicious mod controls that session while you're in it (see next
+  point). Only play valuable accounts with mods you trust.
 * **In-game abuse.** A malicious mod still controls the game session you are playing. It can chat,
   move or drop items, disconnect you, and use the chat-signing key Minecraft needs for signed chat.
   It cannot take your account with it after you close the game.

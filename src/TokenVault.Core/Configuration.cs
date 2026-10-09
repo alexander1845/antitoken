@@ -22,6 +22,8 @@ public sealed class Configuration
     public int MemoryMb { get; set; } = 4096;
     public int SessionMinutes { get; set; } = 240;
     public bool AllowClipboard { get; set; }
+    // Ask in Token Vault's window before every server join, so a mod can't quietly join as you.
+    public bool ConfirmJoins { get; set; } = true;
     public bool RememberSignIn { get; set; } = true;
     public bool ObserveDeniedEndpoints { get; set; }
     public string[] Allowlist { get; set; } =

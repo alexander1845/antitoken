@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -20,8 +20,13 @@ public partial class MainWindow : Window
     private MinecraftIdentity? identity;
     private GameSandbox? sandbox;
     private CancellationTokenSource? running;
-    private bool busy;
+    private CancellationTokenSource? signIn;
+    private bool busy, closeConfirmed;
+    private TaskCompletionSource<bool>? dialog;
     private Uri? codePage;
+    private int modsVersion;
+    private int unseenBlocks;
+    private readonly List<ActivityItem> activity = [];
 
     public MainWindow()
     {
@@ -29,14 +34,17 @@ public partial class MainWindow : Window
         SourceInitialized += (_, _) => App.MatchTitleBar(this);
         Loaded += (_, _) => Initialize();
         Closing += OnClosing;
+        PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape && Overlay.Visibility == Visibility.Visible) { DialogSecondary_Click(this, e); e.Handled = true; } };
         DragOver += (_, e) => { e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) && !busy ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; };
         Drop += async (_, e) => { if (e.Data.GetData(DataFormats.FileDrop) is string[] files) await ImportAsync(files); };
         ServerAddress.TextChanged += (_, _) => ServerHint.Visibility = ServerAddress.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-        LimitsText.Text =
-            "•  A bad mod can still act inside the game while you play: chat, move or drop items, disconnect you.\n" +
-            "•  Programs running outside the sandbox on your PC (malware) can read anything you can.\n" +
-            "•  Playing these mods in another launcher removes this protection.\n" +
-            "•  A mod can show a fake login screen. Token Vault never asks for your password inside the game.";
+        LimitsList.ItemsSource = new[]
+        {
+            new Limit("Actions inside the game", "A bad mod can still chat, move or drop items, or disconnect you while you play. It can't take your account with it."),
+            new Limit("Malware outside the sandbox", "Programs already running on your PC as you (or as administrator) can read anything you can."),
+            new Limit("Other launchers", "Playing these mods in another launcher removes this protection. Use Token Vault for modded play."),
+            new Limit("Fake login screens", "A mod can draw a fake login screen. Token Vault never asks for your password inside the game.")
+        };
     }
 
     private Instance? Selected => (Library.SelectedItem as LibraryRow)?.Instance;
@@ -56,9 +64,31 @@ public partial class MainWindow : Window
         catch (Exception ex) { Error(ex); }
         RefreshLibrary(settings.SelectedInstance);
         RefreshServers();
-        RefreshProtection();
+        RefreshSecurity();
         RefreshAccount();
         SetBusy(false);
+        Status("Ready");
+    }
+
+    // ===================== Navigation =====================
+
+    private void Nav_Checked(object sender, RoutedEventArgs e)
+    {
+        if (!IsInitialized) return;
+        LibraryPage.Visibility = NavLibrary.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        ServersPage.Visibility = NavServers.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        SecurityPage.Visibility = NavSecurity.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        SettingsPage.Visibility = NavSettings.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        if (NavSettings.IsChecked == true) LoadSettingsPage();
+        if (NavSecurity.IsChecked == true) { unseenBlocks = 0; RefreshSecurity(); }
+    }
+
+    private void Tab_Checked(object sender, RoutedEventArgs e)
+    {
+        if (!IsInitialized) return;
+        bool mods = TabMods.IsChecked == true;
+        ModsView.Visibility = mods ? Visibility.Visible : Visibility.Collapsed;
+        ActivityLog.Visibility = mods ? Visibility.Collapsed : Visibility.Visible;
     }
 
     // ===================== Play =====================
@@ -71,14 +101,14 @@ public partial class MainWindow : Window
         using var cts = new CancellationTokenSource();
         running = cts;
         SetBusy(true);
-        PlayButton.Content = "Stop";
-        PlayButton.IsEnabled = true;
+        SetPlayButton(stop: true);
+        HideBanner();
         try
         {
-            if (sandbox.HasLoopbackExemption() == false && !await ApproveNetworkingAsync(ask: true)) { Status("Play needs the one-time approval."); return; }
+            if (sandbox.HasLoopbackExemption() == false && !await ApproveNetworkingAsync()) { Status("Play needs the one-time approval."); return; }
 
             var progress = new Progress<InstallProgress>(p => Status(p.Stage, p.Fraction));
-            Status("Checking game files…", 0);
+            Status("Checking game filesâ€¦", 0);
             using var http = GameInstaller.CreateHttp();
             string profile = await new GameInstaller(http).EnsureAsync(settings, instance.LoaderVersion, progress, cts.Token);
             if (instance.LoaderVersion is null)
@@ -90,37 +120,44 @@ public partial class MainWindow : Window
             var account = await EnsureSignedInAsync(cts.Token);
             InstanceStore.CreateFolder(instance);
             var launch = instance.Apply(settings, profile);
-            await using var session = await VaultSession.StartAsync(launch, account, AppPaths.AuditLog, cts.Token);
-            Status($"Playing as {account.Profile.Name}.", null);
+            await using var session = await VaultSession.StartAsync(launch, account, AppPaths.AuditLog, cts.Token, Observe, ApproveJoinAsync);
+            Status($"Playing {instance.Name} as {account.Profile.Name}", tone: "Accent");
             int code = await JavaLauncher.LaunchAsync(launch, session.Descriptor, sandbox, Log, cts.Token);
-            Status(code == 0 ? "Ready to play." : $"Minecraft closed unexpectedly (code {code}). Its log is in the instance folder under logs.", null,
-                code == 0 ? null : "Bad");
+            if (code == 0) Status("Ready");
+            else Error($"Minecraft closed unexpectedly (exit code {code}). Its log is in the instance folder under logs\\latest.log.");
         }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested) { Status("Game stopped."); }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested) { Status("Game stopped"); }
         catch (Exception ex) { Error(ex); }
         finally
         {
             running = null;
-            CodePanel.Visibility = Visibility.Collapsed;
-            PlayButton.Content = "Play";
+            CloseDialog(false);
+            SetPlayButton(stop: false);
             SetBusy(false);
             RefreshAccount();
             RefreshLibrary(instance.Id);
         }
     }
 
-    private async Task<bool> ApproveNetworkingAsync(bool ask)
+    private void SetPlayButton(bool stop)
+    {
+        PlayButton.Style = (Style)FindResource(stop ? typeof(Button) : "Primary");
+        PlayLabel.Text = stop ? "Stop" : "Play";
+        PlayIcon.Text = stop ? "îœš" : "î¨";
+        PlayButton.IsEnabled = stop || (!busy && sandbox is not null);
+    }
+
+    private async Task<bool> ApproveNetworkingAsync()
     {
         if (sandbox is null) return false;
-        if (ask && MessageBox.Show(this,
-                "Minecraft runs in a Windows sandbox, which can't reach Token Vault on this PC until Windows allows it.\n\n" +
-                "Windows will ask for administrator approval once. Only this sandbox is allowed to connect to this PC " +
-                "(127.0.0.1). No other setting changes and no account is created.",
-                "One-time approval", MessageBoxButton.OKCancel, MessageBoxImage.Information) != MessageBoxResult.OK)
+        if (!await AskAsync("Allow the sandbox to reach Token Vault",
+                "Minecraft runs in a Windows sandbox that can't connect to other programs on this PC by default. " +
+                "Windows will ask for administrator approval once so the sandbox can reach Token Vault.\n\n" +
+                "Only this sandbox is affected. No account is created and nothing else changes.", "Continue"))
             return false;
         bool ok = await sandbox.RequestLoopbackExemptionAsync();
         Log(ok ? "Sandbox networking approved." : "Sandbox networking was not approved.");
-        RefreshProtection();
+        RefreshSecurity();
         return ok;
     }
 
@@ -133,63 +170,69 @@ public partial class MainWindow : Window
         identity = null;
         var cache = new RefreshCache(AppPaths.RefreshCache);
         if (!settings.RememberSignIn && cache.Exists) cache.Delete();
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cancel.CancelAfter(TimeSpan.FromMinutes(15));
+        signIn = cancel;
         // Sign-in only happens while no game runs, so no mod is alive during the browser flow.
         var options = new SignInOptions
         {
             UseDeviceCode = settings.UseDeviceCode,
-            Progress = new Progress<string>(message => Status(message)),
-            ShowDeviceCode = (code, page) => Dispatcher.InvokeAsync(() =>
-            {
-                codePage = page;
-                CodeText.Text = code;
-                CodeUrl.Text = page.Host + page.AbsolutePath.TrimEnd('/');
-                CodePanel.Visibility = Visibility.Visible;
-                Status("Waiting for you to enter the code…");
-            }).Task
+            Progress = new Progress<string>(message => Status(message, tone: "Accent")),
+            ShowDeviceCode = (code, page) => Dispatcher.InvokeAsync(() => ShowCode(code, page)).Task
         };
-        try { identity = await OAuthLogin.LoginAsync(settings, settings.RememberSignIn ? cache.Attach : null, ct, options); }
-        finally { await Dispatcher.InvokeAsync(() => CodePanel.Visibility = Visibility.Collapsed); }
+        try { identity = await OAuthLogin.LoginAsync(settings, settings.RememberSignIn ? cache.Attach : null, cancel.Token, options); }
+        finally { signIn = null; await Dispatcher.InvokeAsync(() => CloseDialog(false)); }
         Log($"Signed in as {identity.Profile.Name}.");
         RefreshAccount();
         return identity;
     }
 
+    private void ShowCode(string code, Uri page)
+    {
+        codePage = page;
+        _ = OpenDialogAsync("Sign in with this code",
+            $"Open {page.Host}{page.AbsolutePath.TrimEnd('/')}, enter the code below and choose your Microsoft account. This window continues on its own.",
+            "Copy code and open Microsoft", "Cancel", code: code);
+    }
+
     private async void SignIn_Click(object sender, RoutedEventArgs e)
     {
         if (busy) return;
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
         SetBusy(true);
-        try { await EnsureSignedInAsync(cts.Token); Status("Signed in."); }
+        HideBanner();
+        try { await EnsureSignedInAsync(CancellationToken.None); Status("Signed in"); }
+        catch (OperationCanceledException) { Status("Sign-in canceled"); }
         catch (Exception ex) { Error(ex); }
         finally { SetBusy(false); RefreshAccount(); }
     }
 
-    private void SignOut_Click(object sender, RoutedEventArgs e)
+    private async void SignOut_Click(object sender, RoutedEventArgs e)
     {
+        if (busy || !await AskAsync("Sign out?", "Token Vault forgets your saved sign-in on this PC. You'll sign in with Microsoft again next time you play.", "Sign out"))
+            return;
         identity?.Dispose();
         identity = null;
         try { new RefreshCache(AppPaths.RefreshCache).Delete(); } catch (Exception ex) { Error(ex); }
-        Status("Signed out on this PC.");
+        Status("Signed out");
         Log("Signed out. To revoke access at Microsoft too, visit account.live.com/consent/Manage.");
         RefreshAccount();
+        RefreshSecurity();
     }
 
     private void RefreshAccount()
     {
         bool saved = File.Exists(AppPaths.RefreshCache);
-        AccountName.Text = identity?.Profile.Name ?? (saved ? "Saved sign-in" : "Not signed in");
-        AccountDetail.Text = identity is not null ? "Signed in. Your tokens stay in Token Vault."
-            : saved ? "Used automatically when you press Play."
-            : "You'll sign in with Microsoft when you press Play.";
-        SignInButton.Visibility = identity is null ? Visibility.Visible : Visibility.Collapsed;
-        SignOutButton.Visibility = identity is not null || saved ? Visibility.Visible : Visibility.Collapsed;
-        SignOutButton.Margin = new Thickness(SignInButton.Visibility == Visibility.Visible ? 18 : 0, 0, 0, 0);
-    }
-
-    private void OpenCodePage_Click(object sender, RoutedEventArgs e)
-    {
-        try { Clipboard.SetText(CodeText.Text); } catch (System.Runtime.InteropServices.COMException) { }
-        if (codePage is not null) Open(codePage.AbsoluteUri);
+        string? name = identity?.Profile.Name;
+        AccountName.Text = name ?? (saved ? "Saved account" : "Not signed in");
+        AccountDetail.Text = name is not null ? "Signed in" : saved ? "Signs in when you play" : "Microsoft account";
+        AccountTile.Background = name is null ? Brush("Selected") : Tiles.For(name);
+        AccountInitial.Text = name is null ? "î»" : name[..1].ToUpperInvariant();
+        AccountInitial.FontFamily = name is null ? (FontFamily)FindResource("IconFont") : (FontFamily)FindResource("UiFont");
+        AccountInitial.Foreground = name is null ? Brush("Secondary") : Brushes.White;
+        SignInButton.Visibility = name is null ? Visibility.Visible : Visibility.Collapsed;
+        SignOutButton.Visibility = name is not null || saved ? Visibility.Visible : Visibility.Collapsed;
+        SignOutButton.Margin = new Thickness(SignInButton.Visibility == Visibility.Visible ? 14 : 0, 0, 0, 0);
+        if (IsLoaded) RefreshSecurity();
     }
 
     // ===================== Library & import =====================
@@ -213,21 +256,28 @@ public partial class MainWindow : Window
         RefreshInstance();
     }
 
-    private void RefreshInstance()
+    private async void RefreshInstance()
     {
         if (Selected is not { } instance) return;
         InstanceTitle.Text = instance.Name;
-        int mods = instance.CountMods();
-        InstanceDetail.Text = string.Join("  ·  ", new[]
-        {
-            "Minecraft " + settings.MinecraftVersion,
-            "Fabric " + (instance.LoaderVersion ?? "(latest)"),
-            mods == 1 ? "1 mod" : $"{mods} mods",
-            instance.Source == "New" ? null : "from " + instance.Source
-        }.Where(s => s is not null));
+        InstanceInitial.Text = Tiles.Initial(instance.Name);
+        InstanceTile.Background = Tiles.For(instance.Name);
         MissingPanel.Visibility = instance.Missing.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         MissingTitle.Text = instance.Missing.Count == 1 ? "1 file needs to be downloaded by hand" : $"{instance.Missing.Count} files need to be downloaded by hand";
         MissingList.ItemsSource = instance.Missing;
+
+        int version = ++modsVersion;
+        var mods = await Task.Run(() => ModInfo.List(instance.ModsDirectory));
+        if (version != modsVersion) return; // a newer selection won
+        ModList.ItemsSource = mods.Select(m => new ModRow(m, Path.Combine(instance.ModsDirectory, m.File))).ToList();
+        ModsEmpty.Visibility = mods.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        ModCount.Text = mods.Count == 0 ? "" : "  " + mods.Count;
+        InstanceFacts.ItemsSource = new[]
+        {
+            "Minecraft " + settings.MinecraftVersion,
+            "Fabric " + (instance.LoaderVersion ?? "latest"),
+            mods.Count == 1 ? "1 mod" : $"{mods.Count} mods"
+        };
     }
 
     private async void Import_Click(object sender, RoutedEventArgs e)
@@ -238,15 +288,17 @@ public partial class MainWindow : Window
 
     private async void AddMods_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Title = "Add mods to " + Selected?.Name, Filter = "Mods (*.jar)|*.jar", Multiselect = true };
+        var dialog = new OpenFileDialog { Title = "Add mods to " + Selected?.Name, Filter = "Fabric mods (*.jar)|*.jar", Multiselect = true };
         if (dialog.ShowDialog(this) == true) await ImportAsync(dialog.FileNames);
     }
 
     // .jar files go into the selected instance; anything else becomes a new instance.
     private async Task ImportAsync(string[] paths)
     {
-        if (busy) { Status("Close the game before importing."); return; }
+        if (busy) { Status("Close the game before importing"); return; }
         SetBusy(true);
+        HideBanner();
+        NavLibrary.IsChecked = true;
         try
         {
             var jars = paths.Where(p => File.Exists(p) && PackImporter.IsModFile(p)).ToList();
@@ -254,7 +306,7 @@ public partial class MainWindow : Window
             {
                 InstanceStore.CreateFolder(target);
                 PackImporter.AddMods(target, jars);
-                Status(jars.Count == 1 ? $"Added {Path.GetFileName(jars[0])}." : $"Added {jars.Count} mods to {target.Name}.");
+                Status(jars.Count == 1 ? $"Added {Path.GetFileName(jars[0])}" : $"Added {jars.Count} mods to {target.Name}");
             }
             using var http = PackImporter.CreateHttp();
             var importer = new PackImporter(http);
@@ -265,27 +317,35 @@ public partial class MainWindow : Window
                 instances.Add(instance);
                 InstanceStore.Save(instances);
                 RefreshLibrary(instance.Id);
-                Status(instance.Missing.Count == 0 ? $"Imported {instance.Name}. Press Play when you're ready."
-                    : $"Imported {instance.Name}, but some files must be downloaded by hand (see below).", null,
-                    instance.Missing.Count == 0 ? null : "Warn");
+                Status(instance.Missing.Count == 0 ? $"Imported {instance.Name}" : $"Imported {instance.Name}; some files need downloading by hand");
             }
         }
         catch (Exception ex) { Error(ex); }
         finally { SetBusy(false); RefreshLibrary(); }
     }
 
-    private void Remove_Click(object sender, RoutedEventArgs e)
+    private async void Remove_Click(object sender, RoutedEventArgs e)
     {
         if (Selected is not { } instance || busy) return;
-        if (MessageBox.Show(this, $"Remove \"{instance.Name}\"?\n\nIts worlds, mods and settings will be deleted from this PC.",
-                "Remove", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+        if (!await AskAsync($"Remove {instance.Name}?", "Its worlds, mods and settings are deleted from this PC. This can't be undone.", "Remove", danger: true))
+            return;
         try { InstanceStore.DeleteFolder(instance); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Error("Some files are in use. Close the game and try again."); return; }
         instances.Remove(instance);
         if (instances.Count == 0) instances = InstanceStore.Load(); // recreates a default instance
         InstanceStore.Save(instances);
         RefreshLibrary();
-        Status($"Removed {instance.Name}.");
+        Status($"Removed {instance.Name}");
+    }
+
+    private async void RemoveMod_Click(object sender, RoutedEventArgs e)
+    {
+        if (busy || Selected is not { } instance || sender is not Button { Tag: string path } ||
+            !SandboxPolicy.IsWithin(path, instance.ModsDirectory)) return;
+        if (!await AskAsync($"Remove {Path.GetFileName(path)}?", "The mod file is deleted from this instance.", "Remove", danger: true)) return;
+        try { File.Delete(path); Status("Removed " + Path.GetFileName(path)); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Error("That file is in use. Close the game and try again."); }
+        RefreshInstance();
     }
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e)
@@ -315,7 +375,7 @@ public partial class MainWindow : Window
     private void RefreshServers()
     {
         ServerList.ItemsSource = settings.Servers.Select(s => new ServerRow(s)).ToList();
-        NoServers.Visibility = settings.Servers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        ServersEmpty.Visibility = settings.Servers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void AddServer_Click(object sender, RoutedEventArgs e) => AddServer();
@@ -330,7 +390,8 @@ public partial class MainWindow : Window
             settings.Save(AppPaths.Config);
             ServerAddress.Text = "";
             RefreshServers();
-            Status(running is null ? $"Added {entry.Host}." : $"Added {entry.Host}. It appears in the game next time you press Play.");
+            HideBanner();
+            Status(running is null ? $"Added {entry.Host}" : $"Added {entry.Host}. It appears in the game next time you play.");
         }
         catch (Exception ex) { Error(ex); }
     }
@@ -341,113 +402,140 @@ public partial class MainWindow : Window
         settings.Servers.Remove(entry);
         TrySaveSettings();
         RefreshServers();
+        Status($"Removed {entry.Host}");
     }
 
-    // ===================== Protection =====================
+    // ===================== Security =====================
 
-    private void RefreshProtection()
+    private void RefreshSecurity()
     {
         bool? network = sandbox?.HasLoopbackExemption();
-        var rows = new List<ProtectionRow>
+        bool saved = File.Exists(AppPaths.RefreshCache);
+        ConfirmJoinsSwitch.IsChecked = settings.ConfirmJoins;
+        ClipboardSwitch.IsChecked = settings.AllowClipboard;
+        RememberSwitch.IsChecked = settings.RememberSignIn;
+        NetworkOk.Visibility = network == true ? Visibility.Visible : Visibility.Collapsed;
+        NetworkButton.Visibility = network == true || sandbox is null ? Visibility.Collapsed : Visibility.Visible;
+        NetworkDetail.Text = sandbox is null ? "Windows couldn't create the sandbox, so Token Vault won't start the game."
+            : network == true ? "The game can reach Token Vault on this PC. Nothing else was changed."
+            : "Needed once: Windows asks an administrator to let the sandbox reach Token Vault on this PC.";
+        SavedDetail.Text = identity is not null ? $"Signed in as {identity.Profile.Name}. Sign out to remove it from this PC."
+            : saved ? "A sign-in is saved on this PC. Sign out to remove it." : "Nothing saved on this PC.";
+        ForgetButton.IsEnabled = !busy && (identity is not null || saved);
+
+        var issues = new List<string>();
+        if (sandbox is null) issues.Add("the sandbox is unavailable");
+        if (!settings.ConfirmJoins) issues.Add("joins aren't confirmed");
+        if (settings.AllowClipboard) issues.Add("the game can read your clipboard");
+        bool failed = sandbox is null;
+        SecurityTitle.Text = failed ? "Protection unavailable" : issues.Count == 0 ? "Your account is protected" : "Protected, with exceptions";
+        SecuritySummary.Text = failed ? "Token Vault won't start the game without its sandbox."
+            : issues.Count == 0 ? (network == true ? "Every protection is on." : "Every protection is on. Windows asks for one approval the first time you play.")
+            : "Your sign-in is safe, but " + string.Join(" and ", issues) + ".";
+        SecurityHero.Background = Brush(failed ? "Bad" : issues.Count == 0 ? "Accent" : "Warn");
+        SecurityBadge.Visibility = failed || issues.Count > 0 || unseenBlocks > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ActivityList.ItemsSource = activity.ToList();
+        ActivityEmpty.Visibility = activity.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        ClearActivityButton.Visibility = activity.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void ConfirmJoins_Click(object sender, RoutedEventArgs e)
+    {
+        settings.ConfirmJoins = ConfirmJoinsSwitch.IsChecked == true;
+        TrySaveSettings();
+        RefreshSecurity();
+        Status(running is not null ? "Applies the next time you press Play" : settings.ConfirmJoins ? "Token Vault will ask before every join" : "Joins no longer need approval");
+    }
+
+    private void Clipboard_Click(object sender, RoutedEventArgs e)
+    {
+        settings.AllowClipboard = ClipboardSwitch.IsChecked == true;
+        TrySaveSettings();
+        RefreshSecurity();
+        Status(running is not null ? "Applies the next time you press Play" : settings.AllowClipboard ? "Copy and paste allowed in the game" : "Clipboard is private");
+    }
+
+    private void Remember_Click(object sender, RoutedEventArgs e)
+    {
+        settings.RememberSignIn = RememberSwitch.IsChecked == true;
+        TrySaveSettings();
+        if (!settings.RememberSignIn) try { new RefreshCache(AppPaths.RefreshCache).Delete(); } catch (IOException) { }
+        RefreshSecurity();
+        RefreshAccount();
+        Status(settings.RememberSignIn ? "You'll stay signed in on this PC" : "Your sign-in won't be saved on this PC");
+    }
+
+    private async void Network_Click(object sender, RoutedEventArgs e)
+    {
+        if (!busy) await ApproveNetworkingAsync();
+    }
+
+    private void ClearActivity_Click(object sender, RoutedEventArgs e)
+    {
+        activity.Clear();
+        RefreshSecurity();
+    }
+
+    // Join approval runs in Token Vault's own window, where the sandboxed game can't click.
+    private Task<bool> ApproveJoinAsync(ServerEntry server, CancellationToken ct) =>
+        Dispatcher.InvokeAsync(() => JoinPrompt.AskAsync(server, identity?.Profile.Name ?? "you", ct)).Task.Unwrap();
+
+    // Turns the vault's sanitized audit events into plain-language activity.
+    private void Observe(string message)
+    {
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => Observe(message)); return; }
+        string[] part = message.Split(':', 3);
+        string Server(string host) => settings.Servers.FirstOrDefault(s => s.Host == host)?.Name ?? host;
+        ActivityItem? item = (part[0], part.ElementAtOrDefault(1), part.ElementAtOrDefault(2)) switch
         {
-            Ok("account", "Your sign-in stays in Token Vault",
-                "Minecraft only gets a stand-in token that Mojang rejects. Your Microsoft and Minecraft tokens never enter the game."),
-            sandbox is null
-                ? Bad("sandbox", "Sandbox unavailable", "Windows couldn't create the sandbox, so Token Vault won't start the game.")
-                : Ok("sandbox", "Mods are sandboxed",
-                    "The game runs in a Windows sandbox. Mods can't open your files, browsers, other launchers or Token Vault itself."),
-            Ok("servers", "Signs in only to your servers",
-                "Token Vault joins servers itself, and only the ones listed above. The game can't use your account anywhere else."),
-            settings.AllowClipboard
-                ? Warn("clipboard", "Clipboard is shared with the game", "Copy and paste work in the game, so mods could read what you copy.", "Make private")
-                : Ok("clipboard", "Clipboard is private", "Mods can't read what you copy, like passwords. Copy and paste in the game is off.", "Allow copy & paste"),
-            network switch
-            {
-                true => Ok("network", "Sandbox networking approved", "The game can reach Token Vault on this PC. Nothing else was changed."),
-                false => Warn("network", "One-time approval needed",
-                    "The first time you play, Windows asks an administrator to let the sandbox reach Token Vault on this PC.", "Approve now"),
-                null => Warn("network", "Sandbox networking unknown", "If the game can't connect, approve it again.", "Approve"),
-            }
+            ("broker", "authenticated", var host) => new("\uE73E", Brush("Good"), $"Signed in to {Server(host!)}", "Token Vault made the connection. The game never saw your token."),
+            ("broker", "approved", var host) => new("\uE8FB", Brush("Good"), $"You approved joining {Server(host!)}", "Approved in Token Vault's window."),
+            ("broker", "blocked", var host) => new("\uE733", Brush("Bad"), $"Blocked a join to {Server(host!)}", "It wasn't approved. If you didn't try to join, a mod may have."),
+            ("broker", "busy", var host) => new("\uE733", Brush("Bad"), $"Blocked a second connection to {Server(host!)}", "Only one connection at a time is allowed. Something tried to open another."),
+            ("http", _, "join-always-denied") => new("\uE733", Brush("Bad"), "Blocked a direct server sign-in", "The game asked to sign in to a server by itself. Only Token Vault does that."),
+            ("http", _, var route) when route is not null && (route.StartsWith("denied", StringComparison.Ordinal) || route == "unknown-or-forbidden") =>
+                new("\uE733", Brush("Bad"), "Blocked an account request", "The game asked Minecraft's services for something outside the allowed list (for example a name or skin change)."),
+            ("session", "started", _) => new("\uE768", Brush("Secondary"), "Game session started", "Your stand-in token was created for this session."),
+            ("session", "closed", _) => new("\uE71A", Brush("Secondary"), "Game session ended", "The stand-in token and local connections were closed."),
+            _ => null
         };
-        if (settings.ClientId.Length == 0)
-            rows.Add(new("signin", "i", Brush("Secondary"), "Sign-in uses Prism Launcher's public app ID",
-                $"Microsoft's sign-in page will say \"{AuthenticationDefaults.BuiltInClientName}\". Token Vault borrows its public ID so you don't have to register an app. Your password only ever goes to Microsoft.",
-                "Use my own"));
-        ProtectionList.ItemsSource = rows;
-
-        ProtectionRow Ok(string key, string title, string detail, string? action = null) => new(key, "✓", Brush("Good"), title, detail, action);
-        ProtectionRow Warn(string key, string title, string detail, string? action = null) => new(key, "!", Brush("Warn"), title, detail, action);
-        ProtectionRow Bad(string key, string title, string detail) => new(key, "✕", Brush("Bad"), title, detail, null);
-    }
-
-    private async void ProtectionAction_Click(object sender, RoutedEventArgs e)
-    {
-        switch ((sender as Button)?.Tag as string)
-        {
-            case "clipboard":
-                if (running is not null) { Status("Change this when the game is closed."); return; }
-                settings.AllowClipboard = !settings.AllowClipboard;
-                TrySaveSettings();
-                RefreshProtection();
-                break;
-            case "network":
-                if (!busy) await ApproveNetworkingAsync(ask: true);
-                break;
-            case "signin":
-                Settings_Click(sender, e);
-                ClientIdBox.Focus();
-                break;
-        }
-    }
-
-    private void LimitsToggle_Click(object sender, RoutedEventArgs e) =>
-        LimitsText.Visibility = LimitsText.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
-
-    private void ActivityToggle_Click(object sender, RoutedEventArgs e)
-    {
-        bool show = ActivityLog.Visibility != Visibility.Visible;
-        ActivityLog.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-        ActivityToggle.Content = show ? "Hide activity" : "Show activity";
+        if (item is null) return;
+        activity.Insert(0, item);
+        if (activity.Count > 200) activity.RemoveAt(activity.Count - 1);
+        if (item.Brush == Brush("Bad")) { unseenBlocks++; Log(item.Title); }
+        RefreshSecurity();
     }
 
     // ===================== Settings =====================
 
-    private void Settings_Click(object sender, RoutedEventArgs e)
+    private void LoadSettingsPage()
     {
         MemoryBox.Text = settings.MemoryMb.ToString(System.Globalization.CultureInfo.InvariantCulture);
         JavaBox.Text = settings.JavaPath;
-        RememberBox.IsChecked = settings.RememberSignIn;
         DeviceCodeBox.IsChecked = settings.UseDeviceCode;
         ClientIdBox.Text = settings.ClientId;
-        ClientIdHint.Text = $"Leave empty to use the built-in one ({AuthenticationDefaults.BuiltInClientName}'s public ID). If you publish Token Vault, register your own.";
-        HomePage.Visibility = Visibility.Collapsed;
-        SettingsPage.Visibility = Visibility.Visible;
+        ClientIdHint.Text = $"Empty uses the built-in public ID ({AuthenticationDefaults.BuiltInClientName}'s).";
     }
 
-    private void SettingsDone_Click(object sender, RoutedEventArgs e)
+    private void SettingsSave_Click(object sender, RoutedEventArgs e)
     {
         var next = settings.Clone();
         next.JavaPath = JavaBox.Text.Trim();
-        next.RememberSignIn = RememberBox.IsChecked == true;
         next.UseDeviceCode = DeviceCodeBox.IsChecked == true;
         next.ClientId = ClientIdBox.Text.Trim();
-        if (!int.TryParse(MemoryBox.Text, out int memory) || memory is < 512 or > 65536)
-        { MessageBox.Show(this, "Memory must be between 512 and 65536 MB.", "Settings"); return; }
+        if (!int.TryParse(MemoryBox.Text, out int memory) || memory is < 512 or > 65536) { Error("Memory must be between 512 and 65536 MB."); return; }
         next.MemoryMb = memory;
         try { next.Save(AppPaths.Config); }
-        catch (InvalidDataException ex) { MessageBox.Show(this, ex.Message, "Settings"); return; }
-        if (next.ClientId != settings.ClientId) { identity?.Dispose(); identity = null; } // different app: sign in again
+        catch (InvalidDataException ex) { Error(ex.Message); return; }
+        if (next.ClientId != settings.ClientId) { identity?.Dispose(); identity = null; } // a different app means signing in again
         settings = next;
-        SettingsCancel_Click(sender, e);
-        RefreshProtection();
+        HideBanner();
+        Status("Settings saved");
+        RefreshSecurity();
         RefreshAccount();
     }
 
-    private void SettingsCancel_Click(object sender, RoutedEventArgs e)
-    {
-        SettingsPage.Visibility = Visibility.Collapsed;
-        HomePage.Visibility = Visibility.Visible;
-    }
+    private void SettingsRevert_Click(object sender, RoutedEventArgs e) => LoadSettingsPage();
 
     private void BrowseJava_Click(object sender, RoutedEventArgs e)
     {
@@ -463,14 +551,63 @@ public partial class MainWindow : Window
         try { settings.Save(AppPaths.Config); } catch (Exception ex) { Error(ex); }
     }
 
+    // ===================== Dialog overlay =====================
+
+    private Task<bool> AskAsync(string title, string body, string primary, bool danger = false) =>
+        OpenDialogAsync(title, body, primary, "Cancel", danger: danger);
+
+    private Task<bool> OpenDialogAsync(string title, string body, string primary, string? secondary, bool danger = false, string? code = null)
+    {
+        dialog?.TrySetResult(false);
+        DialogTitle.Text = title;
+        DialogBody.Text = body;
+        DialogPrimary.Content = primary;
+        DialogPrimary.Style = (Style)FindResource(danger ? "Danger" : "Primary");
+        DialogSecondary.Content = secondary ?? "";
+        DialogSecondary.Visibility = secondary is null ? Visibility.Collapsed : Visibility.Visible;
+        DialogCode.Text = code ?? "";
+        DialogCode.Visibility = code is null ? Visibility.Collapsed : Visibility.Visible;
+        Overlay.Visibility = Visibility.Visible;
+        DialogPrimary.Focus();
+        dialog = new TaskCompletionSource<bool>();
+        return dialog.Task;
+    }
+
+    private void CloseDialog(bool result)
+    {
+        Overlay.Visibility = Visibility.Collapsed;
+        DialogCode.Visibility = Visibility.Collapsed;
+        dialog?.TrySetResult(result);
+        dialog = null;
+    }
+
+    private void DialogPrimary_Click(object sender, RoutedEventArgs e)
+    {
+        if (DialogCode.Visibility == Visibility.Visible) // sign-in code: copy and open, keep showing the code
+        {
+            try { Clipboard.SetText(DialogCode.Text); } catch (System.Runtime.InteropServices.COMException) { }
+            if (codePage is not null) Open(codePage.AbsoluteUri);
+            return;
+        }
+        CloseDialog(true);
+    }
+
+    private void DialogSecondary_Click(object sender, RoutedEventArgs e)
+    {
+        if (DialogCode.Visibility == Visibility.Visible) signIn?.Cancel();
+        CloseDialog(false);
+    }
+
     // ===================== Shell =====================
 
-    private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+    private async void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
-        if (running is null) return;
-        if (MessageBox.Show(this, "Closing Token Vault also closes Minecraft.", "Token Vault", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
-        { e.Cancel = true; return; }
-        running.Cancel(); // the job object also ends the game when this process exits
+        if (running is null || closeConfirmed) return;
+        e.Cancel = true;
+        if (!await AskAsync("Quit Token Vault?", "Minecraft is still running. Quitting Token Vault closes the game too.", "Quit", danger: true)) return;
+        closeConfirmed = true;
+        running?.Cancel(); // the job object also ends the game when this process exits
+        Close();
     }
 
     private void SetBusy(bool value)
@@ -482,19 +619,24 @@ public partial class MainWindow : Window
         AddModsButton.IsEnabled = idle;
         RemoveButton.IsEnabled = idle;
         Library.IsEnabled = idle;
+        ModList.IsEnabled = idle;
         SignInButton.IsEnabled = idle;
         SignOutButton.IsEnabled = idle;
-        SettingsButton.IsEnabled = idle;
-        if (idle) Progress.Visibility = Visibility.Hidden;
+        ForgetButton.IsEnabled = idle;
+        if (idle) ProgressArea.Visibility = Visibility.Collapsed;
     }
 
     private void Status(string text, double? fraction = null, string? tone = null)
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => Status(text, fraction, tone)); return; }
         StatusText.Text = text;
-        StatusText.Foreground = tone is null ? Brush("Secondary") : Brush(tone);
-        Progress.Visibility = fraction is null ? Visibility.Hidden : Visibility.Visible;
-        if (fraction is double f) Progress.Value = Math.Clamp(f, 0, 1);
+        StatusDot.Fill = Brush(tone ?? (busy ? "Accent" : "Good"));
+        ProgressArea.Visibility = fraction is null ? Visibility.Collapsed : Visibility.Visible;
+        if (fraction is double f)
+        {
+            Progress.Value = Math.Clamp(f, 0, 1);
+            ProgressText.Text = $"{Math.Clamp(f, 0, 1):P0}";
+        }
         Log(text);
     }
 
@@ -507,23 +649,34 @@ public partial class MainWindow : Window
     }
 
     private void Error(Exception ex) => Error(Describe(ex));
-    private void Error(string message) => Status(message, null, "Bad");
+
+    private void Error(string message)
+    {
+        BannerText.Text = message;
+        Banner.Visibility = Visibility.Visible;
+        Status("Something went wrong", tone: "Bad");
+        Log("Error: " + message);
+    }
+
+    private void HideBanner() => Banner.Visibility = Visibility.Collapsed;
+    private void Banner_Close(object sender, RoutedEventArgs e) => HideBanner();
 
     // Never shows arbitrary exception text: library messages can contain account details or request data.
     private static string Describe(Exception ex) => ex switch
     {
         UserVisibleException or InvalidDataException or FileNotFoundException or DirectoryNotFoundException => ex.Message,
+        OperationCanceledException => "Canceled.",
         MsalException { ErrorCode: "authentication_canceled" or "access_denied" or "authorization_declined" } => "Sign-in was canceled.",
         MsalException { ErrorCode: "code_expired" or "expired_token" } => "The sign-in code expired. Press Play to get a new one.",
         MsalException { ErrorCode: "invalid_client" or "unauthorized_client" } =>
             "Microsoft rejected the application ID. Clear it in Settings to use the built-in one, or check your registration.",
-        MsalException msal => $"Microsoft sign-in didn't finish ({msal.ErrorCode}). Try again, or turn on code sign-in in Settings.",
+        MsalException msal => $"Microsoft sign-in didn't finish ({msal.ErrorCode}). Try again, or turn on \"Sign in with a code\" in Settings.",
         System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.AddressAlreadyInUse } or
             IOException { InnerException: Microsoft.AspNetCore.Connections.AddressInUseException } =>
-            "Another program is using Token Vault's local ports (25597/25599). Close it and try again.",
-        System.Net.Http.HttpRequestException => "Couldn't reach the internet service. Check your connection and try again.",
+            "Another program is using Token Vault's local ports (25597 or 25599). Close it and try again.",
+        System.Net.Http.HttpRequestException => "Couldn't reach the internet. Check your connection and try again.",
         UnauthorizedAccessException => "Windows denied access to a file Token Vault needs.",
-        _ => $"Something went wrong ({ex.GetType().Name})."
+        _ => $"Something unexpected went wrong ({ex.GetType().Name}). Try again."
     };
 
     private Brush Brush(string key) => (Brush)FindResource(key);
@@ -535,27 +688,64 @@ public partial class MainWindow : Window
     }
 }
 
+// Flat monogram colours, stable per name.
+internal static class Tiles
+{
+    private static readonly Brush[] Palette = new[] { "#2A7F6F", "#3D63B8", "#5A55B0", "#8550A8", "#A84866", "#B5653A", "#4F5D73", "#2B7C9C" }
+        .Select(c => { var b = new SolidColorBrush((Color)ColorConverter.ConvertFromString(c)); b.Freeze(); return (Brush)b; }).ToArray();
+
+    public static Brush For(string name)
+    {
+        uint hash = 2166136261;
+        foreach (char c in name.ToLowerInvariant()) hash = (hash ^ c) * 16777619;
+        return Palette[hash % (uint)Palette.Length];
+    }
+
+    public static string Initial(string name) =>
+        name.FirstOrDefault(char.IsLetterOrDigit) is var c && c != default ? char.ToUpperInvariant(c).ToString() : "?";
+}
+
 public sealed record LibraryRow(Instance Instance)
 {
     public string Name => Instance.Name;
+    public string Initial => Tiles.Initial(Instance.Name);
+    public Brush Tile => Tiles.For(Instance.Name);
     public string Summary
     {
         get
         {
             int mods = Instance.CountMods();
             string count = mods == 1 ? "1 mod" : $"{mods} mods";
-            return Instance.Source == "New" ? count : $"{count} · {Instance.Source}";
+            return Instance.Source == "New" ? count : $"{count} Â· {Instance.Source}";
         }
     }
+}
+
+public sealed record ModRow(ModInfo Mod, string Path)
+{
+    public string Name => Mod.Name;
+    public string Initial => Tiles.Initial(Mod.Name);
+    public Brush Tile => Tiles.For(Mod.Name);
+    public string Detail => Mod.Version is null ? Mod.File : $"{Mod.Version}  Â·  {Mod.File}";
+    public string Size => Mod.Size switch
+    {
+        >= 1024 * 1024 => $"{Mod.Size / 1048576.0:0.0} MB",
+        >= 1024 => $"{Mod.Size / 1024} KB",
+        _ => $"{Mod.Size} B"
+    };
 }
 
 public sealed record ServerRow(ServerEntry Entry)
 {
     public string Name => Entry.Name;
+    public string Initial => Tiles.Initial(Entry.Name);
+    public Brush Tile => Tiles.For(Entry.Host);
     public string Address => Entry.Port == 25565 ? Entry.Host : $"{Entry.Host}:{Entry.Port}";
 }
 
-public sealed record ProtectionRow(string Key, string Glyph, Brush Color, string Title, string Detail, string? Action)
+public sealed record ActivityItem(string Glyph, Brush Brush, string Title, string Detail)
 {
-    public Visibility ActionVisibility => Action is null ? Visibility.Collapsed : Visibility.Visible;
+    public string Time { get; } = DateTime.Now.ToString("HH:mm");
 }
+
+public sealed record Limit(string Title, string Detail);

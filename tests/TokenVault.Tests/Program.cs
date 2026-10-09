@@ -43,7 +43,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("owned online login, Fabric query, compression and encrypted relay", BrokerTests),
     ("offline upstream refusal before gameplay", OfflineTests),
     ("sandbox folder policy, command-line quoting and Java truststore format", SandboxTests),
-    ("server list file, server addresses, pack detection and pack path safety", PackTests)
+    ("server list file, server addresses, pack detection and pack path safety", PackTests),
+    ("join approval and one connection at a time", ApprovalTests)
 };
 int failures = 0;
 foreach (var test in tests)
@@ -374,6 +375,44 @@ static Task PackTests()
     }
     finally { Directory.Delete(dir, true); }
     return Task.CompletedTask;
+}
+
+static async Task ApprovalTests()
+{
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10)); var ct = timeout.Token;
+    var events = new List<string>();
+    async Task<(byte[] Reply, Task Handling, MockAuthenticator Auth)> Attempt(JoinApproval? approve, SemaphoreSlim? slot)
+    {
+        var local = new TcpListener(IPAddress.Loopback, 0); local.Start();
+        var game = new TcpClient(); await game.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)local.LocalEndpoint).Port, ct);
+        var accepted = await local.AcceptTcpClientAsync(ct); local.Stop();
+        var auth = new MockAuthenticator(new TaskCompletionSource<string>());
+        // Port 9 (discard) on loopback: an approved join would try to connect here; a blocked one never does.
+        var broker = new ConnectionBroker(new ServerEntry("Hypixel", "127.0.0.1", 9), Profile(), auth, events.Add, approve, slot);
+        Task handling = broker.HandleAsync(accepted.GetStream(), ct);
+        _ = handling.ContinueWith(_ => accepted.Dispose(), TaskScheduler.Default); // the game sees the socket close
+        await PacketIO.WriteAsync(game.GetStream(), PacketIO.Handshake("mc.hypixel.net", 25565, 2), -1, ct);
+        try { await PacketIO.WriteAsync(game.GetStream(), PacketIO.LoginStart(Profile()), -1, ct); }
+        catch (IOException) { } // a refused connection may already be closed
+        byte[] reply = [];
+        try { reply = await PacketIO.ReadAsync(game.GetStream(), -1, ct); } catch (Exception ex) when (ex is IOException or EndOfStreamException) { }
+        return (reply, handling, auth);
+    }
+
+    // A join the player didn't approve gets a disconnect message and never reaches the authenticator.
+    var asked = new List<string>();
+    var blocked = await Attempt((server, _) => { asked.Add(server.Name); return Task.FromResult(false); }, null);
+    await blocked.Handling;
+    Check(asked.SequenceEqual(new[] { "Hypixel" }), "Player was not asked before joining.");
+    Check(blocked.Reply.Length > 0 && blocked.Reply[0] == 0, "Blocked join did not get a disconnect message.");
+    Check(blocked.Auth.Calls == 0 && events.Contains("broker:blocked:127.0.0.1"), "Blocked join reached authentication.");
+
+    // While a connection holds the shared slot, any other connection (any server) is refused before approval or login.
+    var slot = new SemaphoreSlim(0, 1);
+    bool approvalAsked = false;
+    var busy = await Attempt((_, _) => { approvalAsked = true; return Task.FromResult(true); }, slot);
+    await Throws<InvalidOperationException>(() => busy.Handling);
+    Check(!approvalAsked && busy.Auth.Calls == 0 && events.Contains("broker:busy:127.0.0.1"), "Second connection was not refused.");
 }
 
 static async Task ProbeFixture(string directory)

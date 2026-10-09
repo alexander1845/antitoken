@@ -1,7 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
-using System.Windows.Media;
 using Microsoft.Win32;
 
 namespace TokenVault.App;
@@ -37,14 +36,9 @@ public partial class App : Application
         return key?.GetValue("AppsUseLightTheme") is int light && light == 0;
     }
 
-    private void ApplyDarkPalette()
-    {
-        void Set(string key, string color) => Resources[key] = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color));
-        Set("Bg", "#1C1C1E"); Set("Sidebar", "#161618"); Set("Hover", "#2A2A2D"); Set("Selected", "#323236");
-        Set("Line", "#38383C"); Set("Text", "#F2F2F4"); Set("Secondary", "#9A9AA0");
-        Set("Accent", "#3D8BFF"); Set("AccentHover", "#5C9DFF"); Set("OnAccent", "#FFFFFF");
-        Set("Good", "#3CCB65"); Set("Warn", "#FFA53A"); Set("Bad", "#FF5A55");
-    }
+    // Theme colours live in Themes/Light.xaml and Themes/Dark.xaml; styles reference them dynamically.
+    private void ApplyDarkPalette() =>
+        Resources.MergedDictionaries[0] = new ResourceDictionary { Source = new Uri("Themes/Dark.xaml", UriKind.Relative) };
 
     // Dark title bar to match (Windows 10 2004+ / 11). Purely cosmetic.
     public static void MatchTitleBar(Window window)

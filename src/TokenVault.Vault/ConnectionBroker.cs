@@ -12,11 +12,15 @@ public interface IConnectionAuthenticator
     Task AuthorizeOwnedConnectionAsync(string serverHash, CancellationToken ct);
 }
 
-// One broker per server the player added in Token Vault. It authenticates only connections to that server.
+// Asks the player (in Token Vault's own window, which the sandboxed game cannot click) whether a join is theirs.
+public delegate Task<bool> JoinApproval(ServerEntry server, CancellationToken ct);
+
+// One broker per server the player added in Token Vault. It authenticates only connections to that server, only
+// one game connection at a time across all brokers (shared slot), and optionally only after the player approves.
 public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
-    IConnectionAuthenticator authenticator, Action<string> audit)
+    IConnectionAuthenticator authenticator, Action<string> audit, JoinApproval? approve = null, SemaphoreSlim? slot = null)
 {
-    private readonly SemaphoreSlim oneConnection = new(1, 1);
+    private readonly SemaphoreSlim oneConnection = slot ?? new(1, 1);
     private long lastLogin;
 
     // Loopback only, on a port Windows picks, so nothing collides with other software.
@@ -71,7 +75,11 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
         PacketIO.RequireEnd(handshake, offset);
         if (state == 1) { await StatusAsync(downstream, ct); return; }
         if (state != 2) throw new InvalidDataException("Unsupported intention (including transfer).");
-        if (!await oneConnection.WaitAsync(0, ct)) throw new InvalidOperationException("A game connection is already active.");
+        if (!await oneConnection.WaitAsync(0, ct))
+        {
+            audit("broker:busy:" + target.Host);
+            throw new InvalidOperationException("A game connection is already active.");
+        }
         try
         {
             long now = Environment.TickCount64;
@@ -82,6 +90,24 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
             if (PacketIO.ReadVarInt(start, ref offset) != 0 || PacketIO.ReadString(start, ref offset, 16) != profile.Name ||
                 start.Length - offset != 16 || !start.AsSpan(offset).SequenceEqual(Convert.FromHexString(profile.Id)))
                 throw new InvalidDataException("Wrong local profile.");
+            if (approve is not null)
+            {
+                bool approved;
+                using (var answer = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                {
+                    answer.CancelAfter(TimeSpan.FromSeconds(25)); // the game gives up on a login after ~30 s
+                    try { approved = await approve(target, answer.Token); }
+                    catch (OperationCanceledException) when (!lifetime.IsCancellationRequested) { approved = false; }
+                }
+                if (!approved)
+                {
+                    audit("broker:blocked:" + target.Host);
+                    string reason = System.Text.Json.JsonSerializer.Serialize(new { text = "Token Vault blocked this join. Approve it in the Token Vault window to sign in." });
+                    await PacketIO.WriteAsync(downstream, PacketIO.Packet(0, s => PacketIO.WriteString(s, reason)), -1, lifetime);
+                    return;
+                }
+                audit("broker:approved:" + target.Host);
+            }
             using var remote = new TcpClient { NoDelay = true };
             await remote.ConnectAsync(target.Host, target.Port, ct);
             Stream upstream = remote.GetStream();
@@ -122,7 +148,7 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
                             encrypted = new CipherStream(upstream, secret);
                             upstream = encrypted;
                             authenticated = true;
-                            audit("broker:owned-connection-authenticated");
+                            audit("broker:authenticated:" + target.Host);
                         }
                         finally { CryptographicOperations.ZeroMemory(secret); }
                         continue; // Encryption packet and keys NEVER forwarded to the JVM.
