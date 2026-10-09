@@ -17,7 +17,13 @@ public static class LocalCertificate
         request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new("1.3.6.1.5.5.7.3.1") }, true));
         using var generated = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddDays(1));
         byte[] pfx = generated.Export(X509ContentType.Pfx);
-        try { return new X509Certificate2(pfx, (string?)null, X509KeyStorageFlags.EphemeralKeySet); }
+        // Windows Schannel cannot serve TLS with an EphemeralKeySet key. UserKeySet without PersistKeySet keeps a
+        // temporary key in the user's key store that disposal removes. It is a loopback TLS key, not an account secret.
+        try
+        {
+            return new X509Certificate2(pfx, (string?)null,
+                OperatingSystem.IsWindows() ? X509KeyStorageFlags.UserKeySet : X509KeyStorageFlags.EphemeralKeySet);
+        }
         finally { CryptographicOperations.ZeroMemory(pfx); }
     }
 }

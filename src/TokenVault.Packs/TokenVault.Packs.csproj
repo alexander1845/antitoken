@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../TokenVault.Core/TokenVault.Core.csproj" />
+    <ProjectReference Include="../TokenVault.Launcher/TokenVault.Launcher.csproj" />
+    <PackageReference Include="SharpCompress" Version="1.0.0" />
+  </ItemGroup>
+</Project>

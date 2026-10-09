@@ -6,21 +6,19 @@ namespace TokenVault.Core;
 
 public sealed class Configuration
 {
-    public string ClientId { get; set; } = "REPLACE_WITH_YOUR_APPROVED_APPLICATION_ID";
+    // Empty: use the built-in public sign-in app (see AuthenticationDefaults). Publishers set their own.
+    public string ClientId { get; set; } = "";
+    public bool UseDeviceCode { get; set; }
     public int OAuthPort { get; set; } = 25597;
     public int HttpsPort { get; set; } = 25599;
-    public int GamePort { get; set; } = 25598;
-    public string ServerHost { get; set; } = "";
-    public int ServerPort { get; set; } = 25565;
+    // The only servers Token Vault will sign in to. Each gets its own local port per session.
+    public List<ServerEntry> Servers { get; set; } = [];
     public string MinecraftVersion { get; set; } = "26.1.2";
-    public string FabricProfile { get; set; } = "fabric-loader-0.19.5-26.1.2";
-    // Official launcher install (versions/, libraries/, assets/). The sandbox only ever gets READ access to
-    // those three subfolders, never to the root, which also holds the official launcher's sign-in files.
-    public string MinecraftDirectory { get; set; } = "%APPDATA%/.minecraft";
-    // Sandbox-writable instance (saves, options, logs, configs). Must not be .minecraft itself.
-    public string GameDirectory { get; set; } = "%LOCALAPPDATA%/TokenVault/Instance";
-    public string ModsDirectory { get; set; } = "%LOCALAPPDATA%/TokenVault/Instance/mods";
-    public string JavaPath { get; set; } = ""; // Empty: use the Java runtime the official launcher installed.
+    // Token Vault's own game install (versions/, libraries/, assets/, runtime/). Not the official launcher's
+    // .minecraft, whose root holds that launcher's sign-in files.
+    public string MinecraftDirectory { get; set; } = "%LOCALAPPDATA%/TokenVault/Minecraft";
+    public string JavaPath { get; set; } = ""; // Empty: the Java runtime Token Vault installs
+    public string SelectedInstance { get; set; } = "";
     public int MemoryMb { get; set; } = 4096;
     public int SessionMinutes { get; set; } = 240;
     public bool AllowClipboard { get; set; }
@@ -28,6 +26,11 @@ public sealed class Configuration
     public bool ObserveDeniedEndpoints { get; set; }
     public string[] Allowlist { get; set; } =
         ["GET /services/player/attributes", "POST /services/player/certificates", "GET /services/publickeys"];
+
+    // Per launch, filled from the selected instance; never persisted.
+    [JsonIgnore] public string FabricProfile { get; set; } = "fabric-loader-0.19.5-26.1.2";
+    [JsonIgnore] public string GameDirectory { get; set; } = "%LOCALAPPDATA%/TokenVault/Instances/default";
+    [JsonIgnore] public string ModsDirectory { get; set; } = "%LOCALAPPDATA%/TokenVault/Instances/default/mods";
 
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true, WriteIndented = true };
 
@@ -40,11 +43,15 @@ public sealed class Configuration
     {
         var c = JsonSerializer.Deserialize<Configuration>(File.ReadAllText(path), Json)
             ?? throw new InvalidDataException("Empty configuration.");
+        c.Servers ??= [];
+        c.Allowlist ??= [];
         c.Validate();
         return c;
     }
 
     public static Configuration LoadOrDefault(string path) => File.Exists(path) ? Load(path) : new Configuration();
+
+    public Configuration Clone() => JsonSerializer.Deserialize<Configuration>(JsonSerializer.SerializeToUtf8Bytes(this, Json), Json)!;
 
     public void Save(string path)
     {
@@ -58,18 +65,46 @@ public sealed class Configuration
     {
         if (MinecraftVersion != "26.1.2")
             throw new InvalidDataException("Only Minecraft 26.1.2 / protocol 775 is supported. Other versions fail closed.");
-        if (new[] { HttpsPort, GamePort, OAuthPort }.Any(p => p is < 1024 or > 65535) ||
-            new[] { HttpsPort, GamePort, OAuthPort }.Distinct().Count() != 3)
-            throw new InvalidDataException("Use three distinct ports in 1024..65535.");
-        if (ServerPort is < 1 or > 65535 || ServerHost.Length > 253 ||
-            ServerHost.Any(ch => char.IsControl(ch) || char.IsWhiteSpace(ch) || ch is '/' or '\\' or '@'))
-            throw new InvalidDataException("Invalid fixed target server.");
+        if (new[] { HttpsPort, OAuthPort }.Any(p => p is < 1024 or > 65535) || HttpsPort == OAuthPort)
+            throw new InvalidDataException("Use two distinct ports in 1024..65535.");
+        if (Servers.Count > 32) throw new InvalidDataException("Too many servers.");
+        foreach (var server in Servers) server.Validate();
         if (SessionMinutes is < 1 or > 1440 || MemoryMb is < 512 or > 65536)
             throw new InvalidDataException("Invalid session duration or memory size.");
+        if (ClientId.Length > 0 && !Guid.TryParse(ClientId, out _))
+            throw new InvalidDataException("The Microsoft application ID must be a GUID, or empty to use the built-in one.");
         _ = FabricVersion;
     }
 
     public static string Expand(string path) => Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
+}
+
+public sealed record ServerEntry(string Name, string Host, int Port = 25565)
+{
+    public void Validate()
+    {
+        if (Port is < 1 or > 65535 || Host.Length is < 1 or > 253 || Name.Length > 64 ||
+            Host.Any(ch => char.IsControl(ch) || char.IsWhiteSpace(ch) || ch is '/' or '\\' or '@' or ':') || Name.Any(char.IsControl))
+            throw new InvalidDataException("Invalid server address.");
+    }
+
+    // Accepts "host" or "host:port" as typed by a player.
+    public static ServerEntry Parse(string text, string? name = null)
+    {
+        text = text.Trim();
+        string host = text;
+        int port = 25565;
+        int colon = text.IndexOf(':');
+        if (colon >= 0)
+        {
+            host = text[..colon];
+            if (!int.TryParse(text[(colon + 1)..], System.Globalization.NumberStyles.None, null, out port))
+                throw new InvalidDataException("Use an address like play.example.net or play.example.net:25565.");
+        }
+        var entry = new ServerEntry(string.IsNullOrWhiteSpace(name) ? host : name.Trim(), host.ToLowerInvariant(), port);
+        entry.Validate();
+        return entry;
+    }
 }
 
 // Fixed per-user locations. Data is private to the Windows user and never granted to the game sandbox.
@@ -78,14 +113,21 @@ public static class AppPaths
     public static string Root => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TokenVault");
     public static string Data => Path.Combine(Root, "Data");
     public static string Config => Path.Combine(Data, "config.json");
+    public static string Instances => Path.Combine(Data, "instances.json");
     public static string RefreshCache => Path.Combine(Data, "vault.bin");
     public static string AuditLog => Path.Combine(Data, "requests.log");
+    // Game folders (saves, mods, options) per instance. Created by the vault, then handed to the sandbox.
+    public static string InstanceRoot => Path.Combine(Root, "Instances");
     // Per-launch folders (natives, truststore, temp). Created by the vault, then handed to the sandbox.
     public static string Run => Path.Combine(Root, "Run");
+    // The official launcher's folder. Its root holds that launcher's sign-in files; never shared.
+    public static string OfficialMinecraft => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft");
 }
 
 public sealed record PlayerProfile(string Id, string Name);
 
+public sealed record LocalServer(string Name, int Port);
+
 // Deliberately contains no real credential, upstream secret, or encryption key.
 public sealed record SessionDescriptor(PlayerProfile Profile, string FakeToken, string CertificateDer,
-    int HttpsPort, int GamePort, string MinecraftVersion, DateTimeOffset ExpiresAt);
+    int HttpsPort, IReadOnlyList<LocalServer> Servers, string MinecraftVersion, DateTimeOffset ExpiresAt);

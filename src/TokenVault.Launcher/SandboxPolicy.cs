@@ -8,7 +8,8 @@ public static class SandboxPolicy
 {
     public static IEnumerable<string> ProtectedDirectories(Configuration c) => new[]
     {
-        Configuration.Expand(c.MinecraftDirectory), // official launcher sign-in files live in the root
+        Configuration.Expand(c.MinecraftDirectory),
+        AppPaths.OfficialMinecraft, // the official launcher's sign-in files live in its root
         AppPaths.Data,
         AppContext.BaseDirectory,
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),

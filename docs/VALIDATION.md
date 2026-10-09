@@ -4,6 +4,17 @@ Target: Windows x64 launcher, Minecraft **26.1.2**, protocol **775**, Fabric exa
 loader **0.19.5**, Java **25**, Authlib **7.0.63**. Tests below were performed in a
 Linux build environment. No Microsoft account credentials were supplied.
 
+## Update — one-click Play, modpack import, WPF interface
+
+| Check | Result | Scope |
+|---|---|---|
+| `dotnet build` of all six projects, warnings as errors | PASS | Windows 11, SDK 8.0.425 |
+| Single-file `dotnet publish` (WPF, win-x64) | PASS | `TokenVault.exe` + `AuthlibProbe.java` |
+| Mojang/Fabric metadata the installer depends on | Checked live | 26.1.2 manifest (Java component `java-runtime-epsilon`, asset index 30, Authlib 7.0.63 SHA-1 matches the pin), Fabric 0.19.5 profile JSON (libraries carry SHA-1) |
+| New tests: `servers.dat` NBT, server address parsing, pack format detection, pack/installer path safety, version/loader refusal | Written, **not run locally** | Smart App Control blocks unsigned test DLLs on the dev PC; CI runs them |
+| Installer download, sign-in with the built-in client ID, WPF window, pack downloads (Modrinth/CurseForge) | **NOT RUN** | Needs a run on a PC that allows the unsigned exe |
+| CurseForge public download endpoint without an API key | **UNVERIFIED** | Files that fail are listed for manual download |
+
 ## Update — no second Windows account, AppContainer sandbox, GUI
 
 The separate-user vault (installer script, alternate-credential host, named-pipe handoff,

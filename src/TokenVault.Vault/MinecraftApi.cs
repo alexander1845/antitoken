@@ -21,8 +21,9 @@ public sealed class MinecraftApi(HttpClient http)
         AutomaticDecompression = DecompressionMethods.None
     }) { Timeout = TimeSpan.FromSeconds(25), MaxResponseContentBufferSize = 2 * 1024 * 1024 };
 
-    public async Task<MinecraftIdentity> ExchangeAsync(string msa, CancellationToken ct)
+    public async Task<MinecraftIdentity> ExchangeAsync(string msa, CancellationToken ct, IProgress<string>? progress = null)
     {
+        progress?.Report("Connecting your Xbox profile…");
         using var xbox = await PostAsync("https://user.auth.xboxlive.com/user/authenticate", new
         {
             Properties = new { AuthMethod = "RPS", SiteName = "user.auth.xboxlive.com", RpsTicket = "d=" + msa },
@@ -39,6 +40,7 @@ public sealed class MinecraftApi(HttpClient http)
             long code = xsts.RootElement.TryGetProperty("XErr", out var x) && x.TryGetInt64(out var n) ? n : 0;
             throw new UserVisibleException(XstsError(code));
         }
+        progress?.Report("Signing in to Minecraft…");
         string uhs = xsts.RootElement.GetProperty("DisplayClaims").GetProperty("xui")[0].GetProperty("uhs").GetString()!;
         using var mc = await PostAsync("https://api.minecraftservices.com/authentication/login_with_xbox", new
         {
@@ -47,10 +49,11 @@ public sealed class MinecraftApi(HttpClient http)
         var token = new SecretValue(mc.RootElement.GetProperty("access_token").GetString()!);
         try
         {
+            progress?.Report("Loading your Minecraft profile…");
             using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.minecraftservices.com/minecraft/profile");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Reveal());
             using var response = await http.SendAsync(request, ct);
-            if (!response.IsSuccessStatusCode) throw new UserVisibleException("Minecraft profile unavailable. Check Java Edition ownership and application approval.");
+            if (!response.IsSuccessStatusCode) throw new UserVisibleException("This Microsoft account doesn't own Minecraft: Java Edition (no Java profile found).");
             using var profile = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
             var p = new PlayerProfile(profile.RootElement.GetProperty("id").GetString()!, profile.RootElement.GetProperty("name").GetString()!);
             if (!Guid.TryParseExact(p.Id, "N", out _) || p.Name.Length is < 1 or > 16)

@@ -1,16 +1,15 @@
 {
-  "ClientId": "REPLACE_WITH_YOUR_APPROVED_APPLICATION_ID",
+  "ClientId": "",
+  "UseDeviceCode": false,
   "OAuthPort": 25597,
   "HttpsPort": 25599,
-  "GamePort": 25598,
-  "ServerHost": "SET_YOUR_SERVER_HOST",
-  "ServerPort": 25565,
+  "Servers": [
+    { "Name": "My server", "Host": "play.example.net", "Port": 25565 }
+  ],
   "MinecraftVersion": "26.1.2",
-  "FabricProfile": "fabric-loader-0.19.5-26.1.2",
-  "MinecraftDirectory": "%APPDATA%/.minecraft",
-  "GameDirectory": "%LOCALAPPDATA%/TokenVault/Instance",
-  "ModsDirectory": "%LOCALAPPDATA%/TokenVault/Instance/mods",
+  "MinecraftDirectory": "%LOCALAPPDATA%/TokenVault/Minecraft",
   "JavaPath": "",
+  "SelectedInstance": "",
   "MemoryMb": 4096,
   "SessionMinutes": 240,
   "AllowClipboard": false,
