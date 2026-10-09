@@ -15,7 +15,9 @@ public sealed class Instance
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "Minecraft";
     public string Source { get; set; } = "New";
-    public string? LoaderVersion { get; set; }
+    public string MinecraftVersion { get; set; } = Configuration.DefaultVersion;
+    public string Loader { get; set; } = "fabric";   // vanilla | fabric | quilt | forge | neoforge
+    public string? LoaderVersion { get; set; }       // null: newest stable, pinned on first install
     public List<MissingFile> Missing { get; set; } = [];
     public DateTimeOffset Created { get; set; } = DateTimeOffset.UtcNow;
 
@@ -28,15 +30,20 @@ public sealed class Instance
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return 0; }
     }
 
-    // Launch settings for this instance on top of the player's settings.
-    public Configuration Apply(Configuration settings, string fabricProfile)
+    // Launch settings for this instance on top of the player's settings (before and after installation).
+    public Configuration Apply(Configuration settings, TokenVault.Launcher.InstalledProfile? installed = null)
     {
         var c = settings.Clone();
+        c.MinecraftVersion = MinecraftVersion;
+        c.Loader = Loader;
         c.GameDirectory = Directory;
         c.ModsDirectory = ModsDirectory;
-        c.FabricProfile = fabricProfile;
+        if (installed is not null) { c.Profile = installed.Profile; c.LoaderDirectory = installed.LoaderDirectory; }
         return c;
     }
+
+    public string Describe() => $"Minecraft {MinecraftVersion} · {TokenVault.Launcher.GameInstaller.LoaderName(Loader)}" +
+        (Loader == "vanilla" ? "" : " " + (LoaderVersion ?? "(newest)"));
 }
 
 public static class InstanceStore
@@ -52,8 +59,9 @@ public static class InstanceStore
                 list = JsonSerializer.Deserialize<List<Instance>>(File.ReadAllText(AppPaths.Instances)) ?? [];
         }
         catch (JsonException) { }
-        list.RemoveAll(i => !Guid.TryParseExact(i.Id, "N", out _) || i.Name is null || i.Missing is null);
-        if (list.Count == 0) list.Add(new Instance { Name = "Fabric " + new Configuration().MinecraftVersion, Source = "New" });
+        list.RemoveAll(i => !Guid.TryParseExact(i.Id, "N", out _) || i.Name is null || i.Missing is null ||
+            !Configuration.IsVersionId(i.MinecraftVersion ?? "") || !TokenVault.Launcher.GameInstaller.Loaders.Contains(i.Loader));
+        if (list.Count == 0) list.Add(new Instance { Name = "Fabric " + Configuration.DefaultVersion, Source = "New" });
         return list;
     }
 

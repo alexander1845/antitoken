@@ -13,10 +13,9 @@ public sealed class Configuration
     public int HttpsPort { get; set; } = 25599;
     // The only servers Token Vault will sign in to. Each gets its own local port per session.
     public List<ServerEntry> Servers { get; set; } = [];
-    public string MinecraftVersion { get; set; } = "26.1.2";
-    // Token Vault's own game install (versions/, libraries/, assets/, runtime/). Not the official launcher's
-    // .minecraft, whose root holds that launcher's sign-in files.
-    public string MinecraftDirectory { get; set; } = "%LOCALAPPDATA%/TokenVault/Minecraft";
+    // Token Vault's own game install (versions/, libraries/, assets/, runtime/). Fixed, never the official launcher's
+    // .minecraft (whose root holds that launcher's sign-in files), and not persisted, so old settings can't move it.
+    [JsonIgnore] public string MinecraftDirectory { get; set; } = Path.Combine(AppPaths.GameRoot, "Minecraft");
     public string JavaPath { get; set; } = ""; // Empty: the Java runtime Token Vault installs
     public string SelectedInstance { get; set; } = "";
     public int MemoryMb { get; set; } = 4096;
@@ -26,20 +25,25 @@ public sealed class Configuration
     public bool ConfirmJoins { get; set; } = true;
     public bool RememberSignIn { get; set; } = true;
     public bool ObserveDeniedEndpoints { get; set; }
+    // Can only narrow Token Vault's built-in list of read-only requests (see VaultPolicy); never widen it.
     public string[] Allowlist { get; set; } =
-        ["GET /services/player/attributes", "POST /services/player/certificates", "GET /services/publickeys"];
+        ["GET /services/player/attributes", "POST /services/player/certificates", "GET /services/publickeys",
+         "GET /services/privileges", "GET /session/minecraft/profile"];
 
     // Per launch, filled from the selected instance; never persisted.
-    [JsonIgnore] public string FabricProfile { get; set; } = "fabric-loader-0.19.5-26.1.2";
-    [JsonIgnore] public string GameDirectory { get; set; } = "%LOCALAPPDATA%/TokenVault/Instances/default";
-    [JsonIgnore] public string ModsDirectory { get; set; } = "%LOCALAPPDATA%/TokenVault/Instances/default/mods";
+    [JsonIgnore] public string MinecraftVersion { get; set; } = DefaultVersion;
+    [JsonIgnore] public string Loader { get; set; } = "fabric";            // vanilla | fabric | quilt | forge | neoforge
+    [JsonIgnore] public string Profile { get; set; } = "fabric-loader-0.19.5-26.1.2"; // version id to launch
+    [JsonIgnore] public string LoaderDirectory { get; set; } = "";       // Forge/NeoForge install folder, if any
+    [JsonIgnore] public int Protocol { get; set; }                       // the client's network protocol, set at launch
+    [JsonIgnore] public string GameDirectory { get; set; } = Path.Combine(AppPaths.InstanceRoot, "default");
+    [JsonIgnore] public string ModsDirectory { get; set; } = Path.Combine(AppPaths.InstanceRoot, "default", "mods");
+
+    public const string DefaultVersion = "26.1.2";
 
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true, WriteIndented = true };
 
-    [JsonIgnore]
-    public string FabricVersion =>
-        Regex.Match(FabricProfile, @"^fabric-loader-(.+)-" + Regex.Escape(MinecraftVersion) + "$") is { Success: true } m
-            ? m.Groups[1].Value : throw new InvalidDataException("Fabric profile must be named fabric-loader-<version>-" + MinecraftVersion + ".");
+    public static bool IsVersionId(string id) => Regex.IsMatch(id, @"^[0-9A-Za-z][0-9A-Za-z._+\- ]{0,63}$") && !id.Contains("..");
 
     public static Configuration Load(string path)
     {
@@ -47,6 +51,9 @@ public sealed class Configuration
             ?? throw new InvalidDataException("Empty configuration.");
         c.Servers ??= [];
         c.Allowlist ??= [];
+        // Settings saved by earlier builds list the original three requests; add the read-only ones introduced since.
+        if (c.Allowlist.Order().SequenceEqual(new[] { "GET /services/player/attributes", "GET /services/publickeys", "POST /services/player/certificates" }))
+            c.Allowlist = new Configuration().Allowlist;
         c.Validate();
         return c;
     }
@@ -65,8 +72,7 @@ public sealed class Configuration
 
     public void Validate()
     {
-        if (MinecraftVersion != "26.1.2")
-            throw new InvalidDataException("Only Minecraft 26.1.2 / protocol 775 is supported. Other versions fail closed.");
+        if (!IsVersionId(MinecraftVersion) || !IsVersionId(Profile)) throw new InvalidDataException("Invalid Minecraft version.");
         if (new[] { HttpsPort, OAuthPort }.Any(p => p is < 1024 or > 65535) || HttpsPort == OAuthPort)
             throw new InvalidDataException("Use two distinct ports in 1024..65535.");
         if (Servers.Count > 32) throw new InvalidDataException("Too many servers.");
@@ -75,7 +81,6 @@ public sealed class Configuration
             throw new InvalidDataException("Invalid session duration or memory size.");
         if (ClientId.Length > 0 && !Guid.TryParse(ClientId, out _))
             throw new InvalidDataException("The Microsoft application ID must be a GUID, or empty to use the built-in one.");
-        _ = FabricVersion;
     }
 
     public static string Expand(string path) => Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
@@ -118,10 +123,21 @@ public static class AppPaths
     public static string Instances => Path.Combine(Data, "instances.json");
     public static string RefreshCache => Path.Combine(Data, "vault.bin");
     public static string AuditLog => Path.Combine(Data, "requests.log");
+    // Everything the game touches lives under one folder at the top of the system drive. Java resolves real paths
+    // by listing every parent folder, and a sandboxed process can't list folders inside the user profile, so the
+    // game files can't live there. Locked to this Windows user (and SYSTEM/Administrators).
+    // TOKENVAULT_GAME_ROOT can move it (e.g. to another drive); the one-time setup then covers that drive's root.
+    public static string GameRoot => Environment.GetEnvironmentVariable("TOKENVAULT_GAME_ROOT") is { Length: > 0 } custom
+        ? Path.GetFullPath(custom)
+        : OperatingSystem.IsWindows()
+        ? Path.Combine(Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows)) ?? "C:" + Path.DirectorySeparatorChar, "TokenVault")
+        : Path.Combine(Root, "Game");
     // Game folders (saves, mods, options) per instance. Created by the vault, then handed to the sandbox.
-    public static string InstanceRoot => Path.Combine(Root, "Instances");
+    public static string InstanceRoot => Path.Combine(GameRoot, "Instances");
     // Per-launch folders (natives, truststore, temp). Created by the vault, then handed to the sandbox.
-    public static string Run => Path.Combine(Root, "Run");
+    public static string Run => Path.Combine(GameRoot, "Run");
+    // Where earlier builds kept instances, inside the user profile (migrated on start).
+    public static string LegacyInstanceRoot => Path.Combine(Root, "Instances");
     // The official launcher's folder. Its root holds that launcher's sign-in files; never shared.
     public static string OfficialMinecraft => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft");
 }

@@ -56,18 +56,29 @@ public sealed class GameSandbox
         return false;
     }
 
-    public async Task<bool> RequestLoopbackExemptionAsync()
+    // The drive root must let this sandbox list folder names, or Java can't resolve any path (see AppPaths.GameRoot).
+    public bool HasDriveRootListing() => HasListGrant(new DirectoryInfo(Path.GetPathRoot(AppPaths.GameRoot)!).GetAccessControl());
+
+    // null: unknown. Both one-time steps need administrator approval, so they are done together.
+    public bool? IsSetUp() => HasLoopbackExemption() is bool loopback ? loopback && HasDriveRootListing() : null;
+
+    public async Task<bool> RequestSetupAsync()
     {
-        // Built-in Windows tool; appends this one SID to the exemption list (other entries are preserved).
-        var info = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "CheckNetIsolation.exe"),
-            $"LoopbackExempt -a -p={Sid.Value}") { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden };
+        // Built-in Windows tools, one elevated run:
+        //  * CheckNetIsolation adds this one sandbox to the loopback exemption list (other entries are preserved);
+        //  * icacls lets this one sandbox list the names in the drive root (this folder only; no file contents).
+        string system = Environment.SystemDirectory, drive = Path.GetPathRoot(AppPaths.GameRoot)!;
+        string commands = $"\"{Path.Combine(system, "CheckNetIsolation.exe")}\" LoopbackExempt -a -p={Sid.Value} & " +
+                          $"\"{Path.Combine(system, "icacls.exe")}\" \"{drive}.\" /grant \"*{Sid.Value}:(S,RD,X,RA)\"";
+        var info = new ProcessStartInfo(Path.Combine(system, "cmd.exe"), "/d /c \"" + commands + "\"")
+            { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden };
         try
         {
             using var process = Process.Start(info);
-            if (process is not null) { await process.WaitForExitAsync(); if (process.ExitCode != 0) return false; }
+            if (process is not null) await process.WaitForExitAsync();
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 1223) { return false; } // user declined the UAC prompt
-        return HasLoopbackExemption() != false;
+        return IsSetUp() != false;
     }
 
     // ---- File access. Grants are inheritable and applied only when missing: once the sandbox can write a
@@ -76,12 +87,44 @@ public sealed class GameSandbox
     public void GrantRead(string directory) => Grant(directory, FileSystemRights.ReadAndExecute, write: false);
     public void GrantWrite(string directory) => Grant(directory, FileSystemRights.Modify, write: true);
 
+    // Java (24+) resolves real paths by listing every parent folder. The sandbox may list folder NAMES along the chain
+    // from the game root to each shared folder (this folder only, nothing inherited); file contents stay governed by
+    // the grants above. Synchronize is required: Windows opens folders for listing with it.
+    private const FileSystemRights ListOnly = FileSystemRights.ListDirectory | FileSystemRights.Traverse |
+                                              FileSystemRights.ReadAttributes | FileSystemRights.Synchronize;
+
+    private void GrantParents(string directory)
+    {
+        string root = SandboxPolicy.Normalize(AppPaths.GameRoot);
+        for (string? dir = Path.GetDirectoryName(SandboxPolicy.Normalize(directory));
+             dir is not null && (SandboxPolicy.Same(dir, root) || SandboxPolicy.IsWithin(dir, root));
+             dir = Path.GetDirectoryName(dir))
+        {
+            var info = new DirectoryInfo(dir);
+            if ((info.Attributes & FileAttributes.ReparsePoint) != 0) throw new UserVisibleException("Game folders cannot be links or junctions: " + dir);
+            var acl = info.GetAccessControl();
+            if (HasListGrant(acl)) continue;
+            acl.AddAccessRule(new FileSystemAccessRule(Sid, ListOnly, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
+            info.SetAccessControl(acl);
+        }
+    }
+
+    private bool HasListGrant(DirectorySecurity acl)
+    {
+        foreach (FileSystemAccessRule rule in acl.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+            if (rule.AccessControlType == AccessControlType.Allow && rule.IdentityReference == Sid &&
+                (rule.FileSystemRights & ListOnly) == ListOnly && (rule.PropagationFlags & PropagationFlags.InheritOnly) == 0)
+                return true;
+        return false;
+    }
+
     private void Grant(string directory, FileSystemRights rights, bool write)
     {
         var info = new DirectoryInfo(directory);
         if (!info.Exists) throw new DirectoryNotFoundException("Folder not found: " + directory);
         if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
             throw new UserVisibleException("Sandbox folders cannot be links or junctions: " + directory);
+        if (SandboxPolicy.IsWithin(directory, AppPaths.GameRoot)) GrantParents(directory);
         var acl = info.GetAccessControl();
         if (HasGrant(acl, rights, write)) return;
         // Low integrity label: an AppContainer process cannot write medium-integrity objects even if the DACL allows it.
@@ -123,14 +166,15 @@ public sealed class GameSandbox
 
     // ---- Process creation.
 
+    // output: optional file that receives the process's stdout/stderr. It is the ONLY handle the process inherits.
     public SandboxedProcess Start(string executable, IReadOnlyList<string> arguments, string workingDirectory,
-        IReadOnlyDictionary<string, string> environment, bool allowClipboard)
+        IReadOnlyDictionary<string, string> environment, bool allowClipboard, SafeFileHandle? output = null)
     {
         byte[] containerSid = new byte[Sid.BinaryLength];
         Sid.GetBinaryForm(containerSid, 0);
         var pinned = GCHandle.Alloc(containerSid, GCHandleType.Pinned);
         IntPtr capability = IntPtr.Zero, capabilities = IntPtr.Zero, securityCapabilities = IntPtr.Zero,
-            attributes = IntPtr.Zero, environmentBlock = IntPtr.Zero;
+            attributes = IntPtr.Zero, environmentBlock = IntPtr.Zero, handleList = IntPtr.Zero;
         bool attributesInitialized = false;
         try
         {
@@ -143,9 +187,10 @@ public sealed class GameSandbox
             { AppContainerSid = pinned.AddrOfPinnedObject(), Capabilities = capabilities, CapabilityCount = 1 }, securityCapabilities, false);
 
             IntPtr size = IntPtr.Zero;
-            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+            int attributeCount = output is null ? 1 : 2;
+            InitializeProcThreadAttributeList(IntPtr.Zero, attributeCount, 0, ref size);
             attributes = Marshal.AllocHGlobal(size);
-            if (!InitializeProcThreadAttributeList(attributes, 1, 0, ref size)) throw new Win32Exception();
+            if (!InitializeProcThreadAttributeList(attributes, attributeCount, 0, ref size)) throw new Win32Exception();
             attributesInitialized = true;
             if (!UpdateProcThreadAttribute(attributes, 0, (IntPtr)0x00020009 /* SECURITY_CAPABILITIES */, securityCapabilities,
                     (IntPtr)Marshal.SizeOf<SecurityCapabilities>(), IntPtr.Zero, IntPtr.Zero))
@@ -153,13 +198,23 @@ public sealed class GameSandbox
 
             var startup = new StartupInfoEx { Attributes = attributes };
             startup.StartupInfo.cb = Marshal.SizeOf<StartupInfoEx>();
+            if (output is not null)
+            {
+                if (!SetHandleInformation(output, 1 /* HANDLE_FLAG_INHERIT */, 1)) throw new Win32Exception();
+                handleList = Marshal.AllocHGlobal(IntPtr.Size);
+                Marshal.WriteIntPtr(handleList, output.DangerousGetHandle());
+                if (!UpdateProcThreadAttribute(attributes, 0, (IntPtr)0x00020002 /* HANDLE_LIST */, handleList, IntPtr.Size, IntPtr.Zero, IntPtr.Zero))
+                    throw new Win32Exception();
+                startup.StartupInfo.Flags = 0x100; // STARTF_USESTDHANDLES
+                startup.StartupInfo.StdOutput = startup.StartupInfo.StdError = output.DangerousGetHandle();
+            }
             environmentBlock = Marshal.StringToHGlobalUni(string.Concat(environment
                 .OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase).Select(p => p.Key + "=" + p.Value + "\0")) + "\0");
             var commandLine = new System.Text.StringBuilder(WindowsCommandLine.Build(executable, arguments));
             const uint flags = 0x00080000 /* EXTENDED_STARTUPINFO_PRESENT */ | 0x4 /* CREATE_SUSPENDED */ |
                                0x400 /* CREATE_UNICODE_ENVIRONMENT */ | 0x08000000 /* CREATE_NO_WINDOW */;
-            // bInheritHandles = false: the game receives no handle from this process.
-            if (!CreateProcessW(executable, commandLine, IntPtr.Zero, IntPtr.Zero, false, flags, environmentBlock,
+            // Inheritance is limited by HANDLE_LIST to the output file; without one, nothing is inherited.
+            if (!CreateProcessW(executable, commandLine, IntPtr.Zero, IntPtr.Zero, output is not null, flags, environmentBlock,
                     workingDirectory, ref startup, out ProcessInformation process))
                 throw new Win32Exception();
             var processHandle = new SafeProcessHandle(process.Process, ownsHandle: true);
@@ -187,6 +242,8 @@ public sealed class GameSandbox
             if (capabilities != IntPtr.Zero) Marshal.FreeHGlobal(capabilities);
             if (capability != IntPtr.Zero) LocalFree(capability);
             if (environmentBlock != IntPtr.Zero) Marshal.FreeHGlobal(environmentBlock);
+            if (handleList != IntPtr.Zero) Marshal.FreeHGlobal(handleList);
+            if (output is not null) SetHandleInformation(output, 1, 0);
             pinned.Free();
         }
     }
@@ -267,6 +324,7 @@ public sealed class GameSandbox
     private static extern bool SetInformationJobObject(SafeJobHandle job, int infoClass, ref uint info, int length);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AssignProcessToJobObject(SafeJobHandle job, SafeProcessHandle process);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint ResumeThread(SafeProcessHandle thread);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetHandleInformation(SafeFileHandle handle, uint mask, uint flags);
     [DllImport("kernel32.dll", SetLastError = true)] internal static extern bool TerminateProcess(SafeProcessHandle process, uint exitCode);
 }
 

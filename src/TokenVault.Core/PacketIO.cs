@@ -111,9 +111,9 @@ public static class PacketIO
         await stream.FlushAsync(ct);
     }
 
-    public static byte[] Handshake(string host, int port, int state) => Packet(0, s =>
+    public static byte[] Handshake(string host, int port, int state, int protocol = 775) => Packet(0, s =>
     {
-        WriteVarInt(s, 775); WriteString(s, host);
+        WriteVarInt(s, protocol); WriteString(s, host);
         Span<byte> bytes = stackalloc byte[2]; BinaryPrimitives.WriteUInt16BigEndian(bytes, checked((ushort)port));
         s.Write(bytes); WriteVarInt(s, state);
     });

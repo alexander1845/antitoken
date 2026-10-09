@@ -23,7 +23,7 @@ if (args.Length == 2 && args[0] == "--resolve-fixture")
     string temp = Path.Combine(Path.GetTempPath(), "vault-resolve-test-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(temp);
     try
     {
-        var launch = InstalledFabric.Resolve(config, descriptor, temp);
+        var launch = InstalledVersion.Resolve(config, descriptor, temp);
         Check(launch.MainClass == "net.fabricmc.loader.impl.launch.knot.KnotClient", "Wrong Fabric entry point.");
         Check(launch.GameArguments.Contains(descriptor.FakeToken), "Missing fake token.");
         Check(!launch.JvmArguments.Concat(launch.GameArguments).Any(a => a.Contains("${", StringComparison.Ordinal)), "Unresolved template variable.");
@@ -129,7 +129,7 @@ static async Task TokenTests()
     await msal.GetAccountsAsync();
     Check(schemaChecked, "Actual MSAL cache schema was not checked.");
     Check(VaultPolicy.SanitizePath("/exfil/" + a).Contains("[redacted]"), "Fake leaked into audit path.");
-    Check(!InstalledFabric.Allowed(JsonNode.Parse("[{\"action\":\"allow\",\"os\":{\"name\":\"linux\"}}]")), "Wrong OS library accepted.");
+    Check(!InstalledVersion.Allowed(JsonNode.Parse("[{\"action\":\"allow\",\"os\":{\"name\":\"linux\"}}]")), "Wrong OS library accepted.");
 }
 
 static async Task OAuthCallbackTests()

@@ -50,7 +50,7 @@ public sealed class VaultSession : IAsyncDisposable
             {
                 var listener = ConnectionBroker.Listen();
                 servers.Add(new LocalServer(server.Name, ((System.Net.IPEndPoint)listener.LocalEndpoint).Port));
-                brokers.Add(new ConnectionBroker(server, identity.Profile, authenticator, Audit, config.ConfirmJoins ? approve : null, slot)
+                brokers.Add(new ConnectionBroker(server, identity.Profile, authenticator, Audit, config.ConfirmJoins ? approve : null, slot, config.Protocol)
                     .RunAsync(listener, lifetime.Token));
             }
             Task networking = Task.WhenAll(brokers);

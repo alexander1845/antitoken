@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -60,6 +60,7 @@ public partial class MainWindow : Window
             InstanceStore.Save(instances);
             try { JavaLauncher.CleanStaleRuns(); } catch (IOException) { }
             try { sandbox = GameSandbox.Open(); } catch (Exception ex) { Log("Sandbox: " + Describe(ex)); }
+            GameFolders.Ensure(sandbox?.Sid, Log); // also moves instances from older builds
         }
         catch (Exception ex) { Error(ex); }
         RefreshLibrary(settings.SelectedInstance);
@@ -105,24 +106,34 @@ public partial class MainWindow : Window
         HideBanner();
         try
         {
-            if (sandbox.HasLoopbackExemption() == false && !await ApproveNetworkingAsync()) { Status("Play needs the one-time approval."); return; }
+            if (sandbox.IsSetUp() == false && !await ApproveSetupAsync()) { Status("Play needs the one-time approval."); return; }
 
+            // Everything slow runs off the UI thread so the window stays responsive.
             var progress = new Progress<InstallProgress>(p => Status(p.Stage, p.Fraction));
-            Status("Checking game filesâ€¦", 0);
+            Status("Checking game files…", 0);
             using var http = GameInstaller.CreateHttp();
-            string profile = await new GameInstaller(http).EnsureAsync(settings, instance.LoaderVersion, progress, cts.Token);
-            if (instance.LoaderVersion is null)
+            var target = instance.Apply(settings);
+            var box = sandbox;
+            var installed = await Task.Run(() => new GameInstaller(http).EnsureAsync(target, instance.LoaderVersion, box, progress, cts.Token));
+            if (instance.LoaderVersion is null && installed.LoaderVersion is not null)
             {
-                instance.LoaderVersion = profile["fabric-loader-".Length..^("-" + settings.MinecraftVersion).Length];
+                instance.LoaderVersion = installed.LoaderVersion; // pin the loader build this instance was set up with
                 InstanceStore.Save(instances);
             }
 
             var account = await EnsureSignedInAsync(cts.Token);
             InstanceStore.CreateFolder(instance);
-            var launch = instance.Apply(settings, profile);
-            await using var session = await VaultSession.StartAsync(launch, account, AppPaths.AuditLog, cts.Token, Observe, ApproveJoinAsync);
-            Status($"Playing {instance.Name} as {account.Profile.Name}", tone: "Accent");
-            int code = await JavaLauncher.LaunchAsync(launch, session.Descriptor, sandbox, Log, cts.Token);
+            var launch = instance.Apply(settings, installed);
+            string clientJar = Path.Combine(launch.MinecraftDirectory, "versions", launch.MinecraftVersion, launch.MinecraftVersion + ".jar");
+            launch.Protocol = await Task.Run(() => InstalledVersion.Protocol(clientJar, launch.MinecraftVersion));
+            await using var session = await Task.Run(() => VaultSession.StartAsync(launch, account, AppPaths.AuditLog, cts.Token, Observe, ApproveJoinAsync));
+            Status($"Starting {instance.Name}…", tone: "Accent");
+            var game = sandbox;
+            int code = await Task.Run(() => JavaLauncher.LaunchAsync(launch, session.Descriptor, game, line =>
+            {
+                Log(line);
+                if (line.StartsWith("Starting Minecraft", StringComparison.Ordinal)) Status($"Playing {instance.Name} as {account.Profile.Name}", tone: "Accent");
+            }, cts.Token));
             if (code == 0) Status("Ready");
             else Error($"Minecraft closed unexpectedly (exit code {code}). Its log is in the instance folder under logs\\latest.log.");
         }
@@ -143,20 +154,21 @@ public partial class MainWindow : Window
     {
         PlayButton.Style = (Style)FindResource(stop ? typeof(Button) : "Primary");
         PlayLabel.Text = stop ? "Stop" : "Play";
-        PlayIcon.Text = stop ? "îœš" : "î¨";
+        PlayIcon.Text = stop ? "\uE71A" : "\uE768";
         PlayButton.IsEnabled = stop || (!busy && sandbox is not null);
     }
 
-    private async Task<bool> ApproveNetworkingAsync()
+    private async Task<bool> ApproveSetupAsync()
     {
         if (sandbox is null) return false;
-        if (!await AskAsync("Allow the sandbox to reach Token Vault",
-                "Minecraft runs in a Windows sandbox that can't connect to other programs on this PC by default. " +
-                "Windows will ask for administrator approval once so the sandbox can reach Token Vault.\n\n" +
-                "Only this sandbox is affected. No account is created and nothing else changes.", "Continue"))
+        if (!await AskAsync("One-time sandbox setup",
+                "Windows will ask for administrator approval once, for two small changes that only affect Token Vault's sandbox:\n\n" +
+                "•  let it connect to Token Vault on this PC, and\n" +
+                $"•  let it see the folder names at the top of {Path.GetPathRoot(AppPaths.GameRoot)} (names only, not files), which Java needs.\n\n" +
+                "No account is created and nothing else changes.", "Continue"))
             return false;
-        bool ok = await sandbox.RequestLoopbackExemptionAsync();
-        Log(ok ? "Sandbox networking approved." : "Sandbox networking was not approved.");
+        bool ok = await sandbox.RequestSetupAsync();
+        Log(ok ? "Sandbox setup approved." : "Sandbox setup was not approved.");
         RefreshSecurity();
         return ok;
     }
@@ -226,7 +238,7 @@ public partial class MainWindow : Window
         AccountName.Text = name ?? (saved ? "Saved account" : "Not signed in");
         AccountDetail.Text = name is not null ? "Signed in" : saved ? "Signs in when you play" : "Microsoft account";
         AccountTile.Background = name is null ? Brush("Selected") : Tiles.For(name);
-        AccountInitial.Text = name is null ? "î»" : name[..1].ToUpperInvariant();
+        AccountInitial.Text = name is null ? "\uE77B" : name[..1].ToUpperInvariant();
         AccountInitial.FontFamily = name is null ? (FontFamily)FindResource("IconFont") : (FontFamily)FindResource("UiFont");
         AccountInitial.Foreground = name is null ? Brush("Secondary") : Brushes.White;
         SignInButton.Visibility = name is null ? Visibility.Visible : Visibility.Collapsed;
@@ -274,11 +286,54 @@ public partial class MainWindow : Window
         ModCount.Text = mods.Count == 0 ? "" : "  " + mods.Count;
         InstanceFacts.ItemsSource = new[]
         {
-            "Minecraft " + settings.MinecraftVersion,
-            "Fabric " + (instance.LoaderVersion ?? "latest"),
+            "Minecraft " + instance.MinecraftVersion,
+            instance.Loader == "vanilla" ? "Vanilla" : GameInstaller.LoaderName(instance.Loader) + " " + (instance.LoaderVersion ?? "(newest)"),
             mods.Count == 1 ? "1 mod" : $"{mods.Count} mods"
         };
     }
+
+    private List<string>? releases;
+
+    private async void NewInstance_Click(object sender, RoutedEventArgs e)
+    {
+        if (busy) return;
+        NewName.Text = "";
+        NewLoader.ItemsSource = GameInstaller.Loaders.Select(l => new LoaderItem(l)).ToList();
+        NewLoader.SelectedIndex = Array.IndexOf(GameInstaller.Loaders, "fabric");
+        NewVersion.ItemsSource = releases ?? [Configuration.DefaultVersion];
+        NewVersion.SelectedItem = Configuration.DefaultVersion;
+        NewHint.Text = "The newest stable loader build is chosen automatically.";
+        DialogCard.Visibility = Visibility.Collapsed;
+        NewInstanceCard.Visibility = Visibility.Visible;
+        Overlay.Visibility = Visibility.Visible;
+        NewName.Focus();
+        if (releases is not null) return;
+        try
+        {
+            using var http = GameInstaller.CreateHttp();
+            releases = await Task.Run(() => new GameInstaller(http).ReleasesAsync(CancellationToken.None));
+            string? keep = NewVersion.SelectedItem as string;
+            NewVersion.ItemsSource = releases;
+            NewVersion.SelectedItem = keep is not null && releases.Contains(keep) ? keep : releases.FirstOrDefault();
+        }
+        catch (Exception ex) { NewHint.Text = "Couldn't load the version list: " + Describe(ex); }
+    }
+
+    private void NewInstanceCreate_Click(object sender, RoutedEventArgs e)
+    {
+        if (NewVersion.SelectedItem is not string version || NewLoader.SelectedItem is not LoaderItem loader) return;
+        string name = NewName.Text.Trim();
+        if (name.Length == 0) name = loader.Id == "vanilla" ? "Minecraft " + version : $"{loader} {version}";
+        if (name.Length > 60 || name.Any(char.IsControl)) { NewHint.Text = "Choose a shorter name."; return; }
+        var instance = new Instance { Name = name, MinecraftVersion = version, Loader = loader.Id };
+        instances.Add(instance);
+        InstanceStore.Save(instances);
+        CloseDialog(false);
+        RefreshLibrary(instance.Id);
+        Status($"Created {name}. Press Play to install it.");
+    }
+
+    private void NewInstanceCancel_Click(object sender, RoutedEventArgs e) => CloseDialog(false);
 
     private async void Import_Click(object sender, RoutedEventArgs e)
     {
@@ -304,8 +359,7 @@ public partial class MainWindow : Window
             var jars = paths.Where(p => File.Exists(p) && PackImporter.IsModFile(p)).ToList();
             if (jars.Count > 0 && Selected is { } target)
             {
-                InstanceStore.CreateFolder(target);
-                PackImporter.AddMods(target, jars);
+                await Task.Run(() => { InstanceStore.CreateFolder(target); PackImporter.AddMods(target, jars); });
                 Status(jars.Count == 1 ? $"Added {Path.GetFileName(jars[0])}" : $"Added {jars.Count} mods to {target.Name}");
             }
             using var http = PackImporter.CreateHttp();
@@ -313,7 +367,7 @@ public partial class MainWindow : Window
             foreach (string path in paths.Except(jars))
             {
                 var progress = new Progress<InstallProgress>(p => Status(p.Stage, p.Fraction));
-                var instance = await importer.ImportAsync(path, progress, CancellationToken.None);
+                var instance = await Task.Run(() => importer.ImportAsync(path, progress, CancellationToken.None));
                 instances.Add(instance);
                 InstanceStore.Save(instances);
                 RefreshLibrary(instance.Id);
@@ -409,7 +463,7 @@ public partial class MainWindow : Window
 
     private void RefreshSecurity()
     {
-        bool? network = sandbox?.HasLoopbackExemption();
+        bool? network = sandbox?.IsSetUp();
         bool saved = File.Exists(AppPaths.RefreshCache);
         ConfirmJoinsSwitch.IsChecked = settings.ConfirmJoins;
         ClipboardSwitch.IsChecked = settings.AllowClipboard;
@@ -417,7 +471,7 @@ public partial class MainWindow : Window
         NetworkOk.Visibility = network == true ? Visibility.Visible : Visibility.Collapsed;
         NetworkButton.Visibility = network == true || sandbox is null ? Visibility.Collapsed : Visibility.Visible;
         NetworkDetail.Text = sandbox is null ? "Windows couldn't create the sandbox, so Token Vault won't start the game."
-            : network == true ? "The game can reach Token Vault on this PC. Nothing else was changed."
+            : network == true ? "Approved: the sandbox can reach Token Vault on this PC and see top-level folder names."
             : "Needed once: Windows asks an administrator to let the sandbox reach Token Vault on this PC.";
         SavedDetail.Text = identity is not null ? $"Signed in as {identity.Profile.Name}. Sign out to remove it from this PC."
             : saved ? "A sign-in is saved on this PC. Sign out to remove it." : "Nothing saved on this PC.";
@@ -467,7 +521,7 @@ public partial class MainWindow : Window
 
     private async void Network_Click(object sender, RoutedEventArgs e)
     {
-        if (!busy) await ApproveNetworkingAsync();
+        if (!busy) await ApproveSetupAsync();
     }
 
     private void ClearActivity_Click(object sender, RoutedEventArgs e)
@@ -559,6 +613,8 @@ public partial class MainWindow : Window
     private Task<bool> OpenDialogAsync(string title, string body, string primary, string? secondary, bool danger = false, string? code = null)
     {
         dialog?.TrySetResult(false);
+        NewInstanceCard.Visibility = Visibility.Collapsed;
+        DialogCard.Visibility = Visibility.Visible;
         DialogTitle.Text = title;
         DialogBody.Text = body;
         DialogPrimary.Content = primary;
@@ -576,6 +632,7 @@ public partial class MainWindow : Window
     private void CloseDialog(bool result)
     {
         Overlay.Visibility = Visibility.Collapsed;
+        NewInstanceCard.Visibility = Visibility.Collapsed;
         DialogCode.Visibility = Visibility.Collapsed;
         dialog?.TrySetResult(result);
         dialog = null;
@@ -616,6 +673,7 @@ public partial class MainWindow : Window
         bool idle = !value;
         PlayButton.IsEnabled = running is not null || (idle && sandbox is not null);
         ImportButton.IsEnabled = idle;
+        NewInstanceButton.IsEnabled = idle;
         AddModsButton.IsEnabled = idle;
         RemoveButton.IsEnabled = idle;
         Library.IsEnabled = idle;
@@ -716,7 +774,7 @@ public sealed record LibraryRow(Instance Instance)
         {
             int mods = Instance.CountMods();
             string count = mods == 1 ? "1 mod" : $"{mods} mods";
-            return Instance.Source == "New" ? count : $"{count} Â· {Instance.Source}";
+            return $"{GameInstaller.LoaderName(Instance.Loader)} {Instance.MinecraftVersion} · {count}";
         }
     }
 }
@@ -726,7 +784,7 @@ public sealed record ModRow(ModInfo Mod, string Path)
     public string Name => Mod.Name;
     public string Initial => Tiles.Initial(Mod.Name);
     public Brush Tile => Tiles.For(Mod.Name);
-    public string Detail => Mod.Version is null ? Mod.File : $"{Mod.Version}  Â·  {Mod.File}";
+    public string Detail => Mod.Version is null ? Mod.File : $"{Mod.Version}  ·  {Mod.File}";
     public string Size => Mod.Size switch
     {
         >= 1024 * 1024 => $"{Mod.Size / 1048576.0:0.0} MB",
@@ -749,3 +807,8 @@ public sealed record ActivityItem(string Glyph, Brush Brush, string Title, strin
 }
 
 public sealed record Limit(string Title, string Detail);
+
+public sealed record LoaderItem(string Id)
+{
+    public override string ToString() => GameInstaller.LoaderName(Id);
+}

@@ -85,7 +85,10 @@
           <DockPanel>
             <Grid DockPanel.Dock="Top" Margin="20,22,12,12">
               <TextBlock Text="Library" Style="{StaticResource Title}" VerticalAlignment="Center"/>
-              <Button x:Name="ImportButton" Content="&#xE710;" Style="{StaticResource IconButton}" HorizontalAlignment="Right" ToolTip="Import a modpack or mods" Click="Import_Click"/>
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="NewInstanceButton" Content="&#xE710;" Style="{StaticResource IconButton}" ToolTip="New instance (any Minecraft version and loader)" Click="NewInstance_Click"/>
+                <Button x:Name="ImportButton" Content="&#xE8B5;" Style="{StaticResource IconButton}" ToolTip="Import a modpack or mods" Click="Import_Click"/>
+              </StackPanel>
             </Grid>
             <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="20,12">
               <StackPanel Orientation="Horizontal">
@@ -338,7 +341,7 @@
                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBlock Text="&#xE968;" Style="{StaticResource Icon}" FontSize="17" Foreground="{DynamicResource Secondary}" VerticalAlignment="Top" Margin="0,2,16,0"/>
                 <StackPanel Grid.Column="1" Margin="0,0,20,0">
-                  <TextBlock Text="Sandbox networking" FontWeight="SemiBold"/>
+                  <TextBlock Text="Sandbox setup" FontWeight="SemiBold"/>
                   <TextBlock x:Name="NetworkDetail" Text="" Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
@@ -526,7 +529,33 @@
 
     <!-- ================= Dialog overlay ================= -->
     <Grid x:Name="Overlay" Grid.RowSpan="2" Grid.ColumnSpan="2" Background="{DynamicResource Scrim}" Visibility="Collapsed">
-      <Border Width="460" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1"
+      <!-- New instance -->
+      <Border x:Name="NewInstanceCard" Width="460" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1"
+              HorizontalAlignment="Center" VerticalAlignment="Center" Padding="28,24" Visibility="Collapsed">
+        <StackPanel>
+          <TextBlock Text="New instance" Style="{StaticResource Title}"/>
+          <TextBlock Style="{StaticResource Muted}" Margin="0,6,0,18" Text="Any Minecraft release from 1.8, with or without a mod loader. Token Vault downloads everything when you first press Play."/>
+          <TextBlock Text="Name" FontWeight="SemiBold" Margin="0,0,0,6"/>
+          <TextBox x:Name="NewName"/>
+          <Grid Margin="0,14,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <StackPanel>
+              <TextBlock Text="Minecraft version" FontWeight="SemiBold" Margin="0,0,0,6"/>
+              <ComboBox x:Name="NewVersion"/>
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+              <TextBlock Text="Mod loader" FontWeight="SemiBold" Margin="0,0,0,6"/>
+              <ComboBox x:Name="NewLoader"/>
+            </StackPanel>
+          </Grid>
+          <TextBlock x:Name="NewHint" Style="{StaticResource Caption}" Margin="0,10,0,0" Text="The newest stable loader build is chosen automatically."/>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,24,0,0">
+            <Button Content="Cancel" Click="NewInstanceCancel_Click"/>
+            <Button Content="Create" Style="{StaticResource Primary}" Padding="22,0" Margin="8,0,0,0" Click="NewInstanceCreate_Click"/>
+          </StackPanel>
+        </StackPanel>
+      </Border>
+      <Border x:Name="DialogCard" Width="460" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1"
               HorizontalAlignment="Center" VerticalAlignment="Center" Padding="28,24">
         <StackPanel>
           <TextBlock x:Name="DialogTitle" Style="{StaticResource Title}"/>

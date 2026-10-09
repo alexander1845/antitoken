@@ -12,12 +12,6 @@
           "System.Diagnostics.DiagnosticSource": "6.0.1"
         }
       },
-      "Microsoft.NET.ILLink.Tasks": {
-        "type": "Direct",
-        "requested": "[8.0.31, )",
-        "resolved": "8.0.31",
-        "contentHash": "OJdAGATV2QoVWL11zlDLEluA06q8rK+cgZR47ohrO8V+Qj5z9dlvN7bG9/0e5t0IOe+yD8tREC0bpsEgDGrzIQ=="
-      },
       "System.Security.Cryptography.ProtectedData": {
         "type": "Direct",
         "requested": "[8.0.0, )",
@@ -45,7 +39,6 @@
       "tokenvault.core": {
         "type": "Project"
       }
-    },
-    "net8.0/win-x64": {}
+    }
   }
 }
