@@ -59,6 +59,7 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
     {
         using (client)
         {
+            client.NoDelay = true; // small game packets go out at once (Nagle would hold them back and add ping)
             try { await HandleAsync(client.GetStream(), ct); }
             catch (OperationCanceledException) { }
             catch (Exception ex) { audit("broker-denied:" + ex.GetType().Name); }
@@ -115,15 +116,20 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
                 }
                 audit("broker:approved:" + target.Host);
             }
-            using var remote = new TcpClient { NoDelay = true };
-            await remote.ConnectAsync(target.Host, target.Port, ct);
-            Stream upstream = remote.GetStream();
+            int compression = -1;
+            bool loggedIn = false;
             CipherStream? encrypted = null;
             try
             {
-                await PacketIO.WriteAsync(upstream, PacketIO.Handshake(target.Host + marker, target.Port, 2, protocol), -1, ct);
+                // Same packets the game itself would send: SRV lookup, then the handshake with the address as typed
+                // (1.17+) or as resolved (older versions), then the game's own Login Start.
+                var endpoint = await ServerResolver.ResolveAsync(target, ct);
+                using var remote = new TcpClient { NoDelay = true };
+                await remote.ConnectAsync(endpoint.Host, endpoint.Port, ct);
+                Stream upstream = remote.GetStream();
+                var (handshakeHost, handshakePort) = protocol >= 755 ? (target.Host, target.Port) : (endpoint.Host, endpoint.Port);
+                await PacketIO.WriteAsync(upstream, PacketIO.Handshake(handshakeHost + marker, handshakePort, 2, protocol), -1, ct);
                 await PacketIO.WriteAsync(upstream, start, -1, ct);
-                int compression = -1;
                 bool authenticated = false;
                 while (true)
                 {
@@ -185,6 +191,7 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
                             throw new InvalidDataException("Upstream returned a different account.");
                         if (PacketIO.ReadString(packet, ref offset, 16) != profile.Name) throw new InvalidDataException("Upstream returned a different name.");
                         await PacketIO.WriteAsync(downstream, packet, compression, ct);
+                        loggedIn = true;
                         if (protocol >= 764)
                         {
                             byte[] ack = await PacketIO.ReadAsync(downstream, compression, ct);
@@ -216,10 +223,35 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
                     throw new InvalidDataException("Unsupported login packet.");
                 }
             }
+            catch (Exception ex) when (!loggedIn && !lifetime.IsCancellationRequested)
+            {
+                // Tell the player why in the game's own disconnect screen instead of letting it time out.
+                string reason = FailureReason(ex);
+                audit("broker:failed:" + target.Host + ":" + ex.GetType().Name);
+                try
+                {
+                    string json = JsonSerializer.Serialize(new { text = "Token Vault: " + reason });
+                    await PacketIO.WriteAsync(downstream, PacketIO.Packet(0, s => PacketIO.WriteString(s, json)), compression, lifetime);
+                }
+                catch (Exception) when (!lifetime.IsCancellationRequested) { }
+                throw;
+            }
             finally { encrypted?.Dispose(); }
         }
         finally { oneConnection.Release(); }
     }
+
+    // Plain-language reasons. No server data or exception text: only the kind of failure.
+    private string FailureReason(Exception ex) => ex switch
+    {
+        SocketException or IOException => $"couldn't connect to {target.Host}. The server may be offline or the address may be wrong.",
+        OperationCanceledException => $"{target.Host} didn't answer in time.",
+        MojangJoinException mojang => mojang.Message,
+        HttpRequestException => "couldn't reach Minecraft's sign-in service. Check your internet connection.",
+        _ when ex.Message == "Upstream must require online authentication." || ex.Message == "Offline-mode upstreams are refused." =>
+            $"{target.Host} is an offline-mode server. Token Vault only signs in to servers that verify accounts.",
+        _ => $"the server sent something unexpected while signing in ({ex.GetType().Name})."
+    };
 
     // Login Start always begins with the player name. From 1.19.1 it can carry the UUID (always from 1.20.2): it must be ours.
     private void CheckLoginStart(byte[] start)
@@ -274,10 +306,12 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
         deadline.CancelAfter(TimeSpan.FromSeconds(5));
         try
         {
+            var endpoint = await ServerResolver.ResolveAsync(target, deadline.Token);
             using var remote = new TcpClient { NoDelay = true };
-            await remote.ConnectAsync(target.Host, target.Port, deadline.Token);
+            await remote.ConnectAsync(endpoint.Host, endpoint.Port, deadline.Token);
             var upstream = remote.GetStream();
-            await PacketIO.WriteAsync(upstream, PacketIO.Handshake(target.Host + marker, target.Port, 1, protocol), -1, deadline.Token);
+            var (host, port) = protocol >= 755 ? (target.Host, target.Port) : (endpoint.Host, endpoint.Port);
+            await PacketIO.WriteAsync(upstream, PacketIO.Handshake(host + marker, port, 1, protocol), -1, deadline.Token);
             await PacketIO.WriteAsync(upstream, [0], -1, deadline.Token);
             byte[] response = await PacketIO.ReadAsync(upstream, -1, deadline.Token);
             int offset = 0;

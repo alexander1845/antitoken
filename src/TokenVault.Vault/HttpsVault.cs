@@ -23,7 +23,12 @@ public sealed class HttpsVault(Configuration config, MinecraftIdentity identity,
             server.Limits.MaxRequestBodySize = 8192;
             server.Limits.MaxConcurrentConnections = 16;
             server.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(10);
-            server.Listen(IPAddress.Loopback, config.HttpsPort, listen => listen.UseHttps(certificate));
+            // TLS 1.2+ only (1.3 where Windows supports it), so the game can't be talked down to legacy protocol versions.
+            server.Listen(IPAddress.Loopback, config.HttpsPort, listen => listen.UseHttps(new Microsoft.AspNetCore.Server.Kestrel.Https.HttpsConnectionAdapterOptions
+            {
+                ServerCertificate = certificate,
+                SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13
+            }));
         });
         var app = builder.Build();
         app.Run(HandleAsync);

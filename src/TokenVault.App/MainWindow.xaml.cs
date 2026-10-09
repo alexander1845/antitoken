@@ -162,9 +162,10 @@ public partial class MainWindow : Window
     {
         if (sandbox is null) return false;
         if (!await AskAsync("One-time sandbox setup",
-                "Windows will ask for administrator approval once, for two small changes that only affect Token Vault's sandbox:\n\n" +
-                "•  let it connect to Token Vault on this PC, and\n" +
-                $"•  let it see the folder names at the top of {Path.GetPathRoot(AppPaths.GameRoot)} (names only, not files), which Java needs.\n\n" +
+                "Windows will ask for administrator approval once, for small changes that only affect Token Vault's sandbox:\n\n" +
+                "•  let it connect to Token Vault on this PC,\n" +
+                $"•  let it see the folder names at the top of {Path.GetPathRoot(AppPaths.GameRoot)} (names only, not files), which Java needs, and\n" +
+                $"•  mark {AppPaths.GameRoot} as a sandbox folder so the game can save there.\n\n" +
                 "No account is created and nothing else changes.", "Continue"))
             return false;
         bool ok = await sandbox.RequestSetupAsync();
@@ -474,7 +475,7 @@ public partial class MainWindow : Window
             : network == true ? "Approved: the sandbox can reach Token Vault on this PC and see top-level folder names."
             : "Needed once: Windows asks an administrator to let the sandbox reach Token Vault on this PC.";
         SavedDetail.Text = identity is not null ? $"Signed in as {identity.Profile.Name}. Sign out to remove it from this PC."
-            : saved ? "A sign-in is saved on this PC. Sign out to remove it." : "Nothing saved on this PC.";
+            : saved ? $"A sign-in is saved on this PC, encrypted with {RefreshCache.Protection(AppPaths.RefreshCache)}. Sign out to remove it." : "Nothing saved on this PC.";
         ForgetButton.IsEnabled = !busy && (identity is not null || saved);
 
         var issues = new List<string>();
@@ -545,6 +546,7 @@ public partial class MainWindow : Window
             ("broker", "authenticated", var host) => new("\uE73E", Brush("Good"), $"Signed in to {Server(host!)}", "Token Vault made the connection. The game never saw your token."),
             ("broker", "approved", var host) => new("\uE8FB", Brush("Good"), $"You approved joining {Server(host!)}", "Approved in Token Vault's window."),
             ("broker", "blocked", var host) => new("\uE733", Brush("Bad"), $"Blocked a join to {Server(host!)}", "It wasn't approved. If you didn't try to join, a mod may have."),
+            ("broker", "failed", var rest) => new("\uE783", Brush("Bad"), $"Couldn't join {Server(rest!.Split(':')[0])}", "The game shows the reason on its disconnect screen."),
             ("broker", "busy", var host) => new("\uE733", Brush("Bad"), $"Blocked a second connection to {Server(host!)}", "Only one connection at a time is allowed. Something tried to open another."),
             ("http", _, "join-always-denied") => new("\uE733", Brush("Bad"), "Blocked a direct server sign-in", "The game asked to sign in to a server by itself. Only Token Vault does that."),
             ("http", _, var route) when route is not null && (route.StartsWith("denied", StringComparison.Ordinal) || route == "unknown-or-forbidden") =>
@@ -706,7 +708,14 @@ public partial class MainWindow : Window
         ActivityLog.ScrollToEnd();
     }
 
-    private void Error(Exception ex) => Error(Describe(ex));
+    private void Error(Exception ex)
+    {
+        Error(Describe(ex));
+        // Where it failed (code locations only, no data) goes to the activity log to help with bug reports.
+        if (ex is not (UserVisibleException or OperationCanceledException) && ex.StackTrace is { } trace)
+            Log($"Details: {ex.GetType().Name} at " + string.Join(" < ", trace.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Take(4).Select(l => l.StartsWith("at ", StringComparison.Ordinal) ? l[3..].Split(" in ")[0] : l)));
+    }
 
     private void Error(string message)
     {
@@ -734,6 +743,8 @@ public partial class MainWindow : Window
             "Another program is using Token Vault's local ports (25597 or 25599). Close it and try again.",
         System.Net.Http.HttpRequestException => "Couldn't reach the internet. Check your connection and try again.",
         UnauthorizedAccessException => "Windows denied access to a file Token Vault needs.",
+        // Windows' own error text describes the failure, not the request, so it is safe to show.
+        System.ComponentModel.Win32Exception win32 => $"Windows reported an error: {win32.Message} (error {win32.NativeErrorCode}).",
         _ => $"Something unexpected went wrong ({ex.GetType().Name}). Try again."
     };
 
