@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/TokenVault.Vault/TokenVault.Vault.csproj" />
     <ProjectReference Include="../../src/TokenVault.Launcher/TokenVault.Launcher.csproj" />
+    <ProjectReference Include="../../src/TokenVault.Packs/TokenVault.Packs.csproj" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 </Project>

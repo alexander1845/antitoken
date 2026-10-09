@@ -5,7 +5,7 @@ namespace TokenVault.Launcher;
 
 public static class JavaLocator
 {
-    // Explicit path wins; otherwise the runtime the official launcher installed for this version, then common JDKs.
+    // Explicit path wins; otherwise the Java runtime Token Vault installed for this version, then common JDKs.
     public static string? Find(Configuration c)
     {
         if (!string.IsNullOrWhiteSpace(c.JavaPath)) return File.Exists(Configuration.Expand(c.JavaPath)) ? Configuration.Expand(c.JavaPath) : null;

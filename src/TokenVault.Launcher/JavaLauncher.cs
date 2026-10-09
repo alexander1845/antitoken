@@ -10,11 +10,9 @@ public static class JavaLauncher
 {
     public static async Task<int> LaunchAsync(Configuration c, SessionDescriptor session, GameSandbox sandbox, Action<string> log, CancellationToken ct)
     {
-        if (session.MinecraftVersion != c.MinecraftVersion || session.ExpiresAt <= DateTimeOffset.UtcNow ||
-            session.HttpsPort != c.HttpsPort || session.GamePort != c.GamePort)
+        if (session.MinecraftVersion != c.MinecraftVersion || session.ExpiresAt <= DateTimeOffset.UtcNow || session.HttpsPort != c.HttpsPort)
             throw new InvalidDataException("Vault descriptor does not match configuration or has expired.");
-        string java = JavaLocator.Find(c) ?? throw new UserVisibleException(
-            "Java 25 was not found. Start Minecraft 26.1.2 once in the official launcher (it installs Java), or choose java.exe in Settings.");
+        string java = JavaLocator.Find(c) ?? throw new UserVisibleException("Java 25 is not installed yet. Press Play again to install it.");
         string javaVersion = await CaptureAsync(java, ["-version"], ct);
         if (!Regex.IsMatch(javaVersion, "version \"25(?:[.\"])", RegexOptions.CultureInvariant))
             throw new UserVisibleException("Minecraft 26.1.2 needs Java 25; the selected java.exe is a different version.");
@@ -51,6 +49,9 @@ public static class JavaLauncher
             if (!modsInsideGame) sandbox.GrantRead(mods);
             Directory.CreateDirectory(skins);
             sandbox.GrantWrite(skins); // skin cache only; holds downloaded PNGs
+            // The server list points the game at Token Vault's local brokers. No sandboxed process is running
+            // now (each game's job is gone), so nothing can race this write.
+            ServersFile.Write(Path.Combine(game, "servers.dat"), session.Servers);
             sandbox.GrantWrite(game);
             sandbox.GrantWrite(run);
 
@@ -97,8 +98,8 @@ public static class JavaLauncher
         $"-Dminecraft.api.profiles.host=https://127.0.0.1:{s.HttpsPort}/profiles",
         "-Djavax.net.ssl.trustStore=" + trust, "-Djavax.net.ssl.trustStoreType=JKS", "-Djavax.net.ssl.trustStorePassword=" + JavaTrustStore.Password,
         // Keep every write inside sandbox-writable folders.
-        "-XX:-UsePerfData", "-Djava.io.tmpdir=" + temp, "-Djna.tmpdir=" + temp,
-        "-Dorg.lwjgl.system.SharedLibraryExtractPath=" + temp, "-Duser.home=" + game];
+        // (Natives/JNA/LWJGL extraction already point at the per-launch natives folder via the version's arguments.)
+        "-XX:-UsePerfData", "-Djava.io.tmpdir=" + temp, "-Duser.home=" + game];
 
     // Removes per-launch folders. The sandbox could write into them, but .NET deletes links themselves rather than
     // following them, so planted junctions cannot redirect this delete elsewhere.

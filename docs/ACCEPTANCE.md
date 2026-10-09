@@ -24,9 +24,10 @@ in the production vault.
 
 ## Windows/live-account checks still required
 
-1. **Actual sandboxed launch and online join.** Build on Windows, configure an approved
-   app, install 26.1.2 Fabric, approve the one-time loopback prompt, and launch against
-   an online-mode server you control. Check rendering (OpenGL driver inside the
+1. **Actual sandboxed launch and online join.** On a clean Windows PC, press Play: the
+   installer must fetch 26.1.2, Java and Fabric; approve the one-time loopback prompt; sign
+   in with the built-in ID and with your own; add an online-mode server you control and join
+   it from the in-game Multiplayer list. Import one pack of each supported format. Check rendering (OpenGL driver inside the
    AppContainer), audio, signed chat, mod/plugin handshakes, skins, resource packs,
    disconnect/reconnect and the configured mods folder. No unsandboxed fallback is allowed.
 2. **Credential boundary.** Inspect the JVM command line and environment for an

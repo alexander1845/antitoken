@@ -1,11 +1,12 @@
 # Token Vault — sandboxed launcher for Minecraft 26.1.2 / Fabric
 
-Windows 10/11 x64, C#/.NET 8 (WinForms GUI), Java **25**, Fabric (example loader **0.19.5**),
+Windows 10/11 x64, C#/.NET 8 (WPF GUI), Java **25**, Fabric (example loader **0.19.5**),
 Minecraft protocol **775**, Mojang Authlib **7.0.63**. MIT licensed, open source.
 
 **Goal:** play with Fabric mods you don't fully trust, without any mod being able to steal your
 Minecraft session token, your Microsoft refresh token, or other sign-in data on your PC.
-One app, one window, your normal Windows account. No second Windows user.
+One app, one window, one Play button, your normal Windows account. No second Windows user, no
+official launcher, no app registration needed to test.
 
 > Status: compiles cleanly; the protocol/API regression suite runs in CI. The AppContainer launch
 > has **not** yet been validated on a real game install. See [VALIDATION.md](docs/VALIDATION.md).
@@ -37,7 +38,8 @@ One app, one window, your normal Windows account. No second Windows user.
    keys) and returns 403 for everything else. That includes every `/session/minecraft/join` alias,
    name/skin changes, and arbitrary URLs. See [ALLOWLIST.md](docs/ALLOWLIST.md).
 2. **Server login is done by the vault, not the game.** The game connects to a local Minecraft
-   listener. The vault opens its own connection to the one configured server, generates the
+   listener (one per server you add; they appear in the game's Multiplayer list). The vault opens
+   its own connection to that server, generates the
    encryption secret, calls Mojang's join endpoint itself, then relays the game traffic. A mod can't
    ask the vault to authenticate some other connection (for example, relaying a join hash from an
    attacker's PC), because there is no API for it.
@@ -51,8 +53,7 @@ One app, one window, your normal Windows account. No second Windows user.
    * **the vault's memory.** Low-integrity processes can't open normal-integrity processes for
      reading or injection. The real token in TokenVault.exe's RAM is out of reach.
    * **writes outside its folders.** Mods can't replace TokenVault.exe, the config, other launchers,
-     startup items, or the shared `libraries`/`versions` files that the official launcher would run
-     unsandboxed later.
+     startup items, or the shared game install (`libraries`, `versions`, Java).
    * **your clipboard** (default). Passwords you copy from a password manager while playing stay out
      of reach. You can re-enable copy/paste in the window.
    * **input to other windows.** UIPI blocks Low-integrity processes from sending messages to normal
@@ -93,70 +94,72 @@ creates no account, starts no service, and changes no other setting. To undo it:
 * **Memory hygiene.** Managed strings from MSAL/JSON/HTTP can't be reliably zeroed. Token Vault never
   writes real tokens to logs, files (besides the DPAPI blob), command lines, or the game environment.
 
-## Prerequisites
+## Using it
 
-1. Windows 10/11 x64 and a purchased Minecraft Java account with multiplayer permission.
-2. Minecraft **26.1.2** plus Fabric for 26.1.2, installed with the official launcher and the Fabric
-   installer. Run the Fabric profile **once** in the official launcher (to download libraries,
-   assets and Java), then close it. Java comes from that install automatically. A JDK 25 is optional
-   and enables an extra Authlib self-check before each launch.
-3. **Your own approved Microsoft/Minecraft application (client) ID.** See below.
-4. One online-mode server address. DNS SRV records, server transfers and Realms are not supported.
+1. Run `TokenVault.exe`.
+2. Press **Play**. The first time, Token Vault:
+   * downloads Minecraft 26.1.2, its Java runtime and Fabric from Mojang/Fabric
+     (HTTPS, every file checked against the published SHA-1) into `%LOCALAPPDATA%\TokenVault\Minecraft`.
+     The official launcher is not needed and is not touched.
+   * asks Windows for the one-time sandbox networking approval (see above),
+   * opens Microsoft's sign-in page in your browser. Choose your account and you're done.
+     Later launches reuse the saved sign-in.
+3. Add the servers you play on under **Servers**. They show up in the game's Multiplayer list.
+   Servers added inside the game can't sign you in, because the game never has your account.
 
-## Register the application
+### Mods and modpacks
 
-1. In Microsoft Entra **App registrations**, create an app that supports **personal Microsoft
-   accounts**. Configure it as a **public client / mobile & desktop** app with no secret, and add
-   the redirect URI `http://127.0.0.1:25597/`.
-2. Follow Minecraft's application review process for Minecraft Services access
-   ([help article](https://help.minecraft.net/hc/en-us/articles/16254801392141)). Until it is
-   approved, `login_with_xbox` returns 403. Don't reuse another launcher's client ID.
-3. Paste the client ID into **Advanced → Microsoft app ID** in Token Vault.
+**Import modpack…** (or drag files onto the window) accepts:
 
-Sign-in uses MSAL's system-browser authorization-code flow with PKCE. There is no embedded browser,
-password form, device code, or client secret.
+| What | Notes |
+|---|---|
+| Modrinth `.mrpack` | Mods download from Modrinth/GitHub/GitLab only, checked against the pack's SHA-512/SHA-1 |
+| CurseForge modpack `.zip` (`manifest.json`) | Uses CurseForge's public download links. Files whose authors block third-party downloads are listed with links so you can download them and drop them on the window |
+| Prism Launcher / MultiMC export `.zip` (`mmc-pack.json`, `instance.cfg`) | Copies the instance's `.minecraft` folder |
+| Any `.zip`, `.7z`, `.rar`, `.tar`, `.tar.gz` or folder | If it contains a `mods/` folder, that whole game folder (config, resource packs…) is imported. Otherwise every `.jar` becomes a mod |
+| `.jar` files | Added to the selected instance |
 
-## Use it
+Each pack becomes its own instance in the **Library**, in a new folder the sandbox has never had
+access to. Sign-in files that other launchers keep (`accounts.json`, `launcher_accounts.json`,
+`launcher_msa_credentials.bin`, …) are never copied, even from a zipped-up `.minecraft`.
+Packs for other Minecraft versions, or for Forge, NeoForge or Quilt, are refused before anything
+is downloaded. Token Vault only plays Minecraft 26.1.2 with Fabric.
 
-1. Build it (below), or download the `TokenVault-win-x64` artifact from CI.
-2. Run `TokenVault.exe`. Fill in **Server**, pick the **Fabric profile**, and check that the
-   **Minecraft folder** points at your `.minecraft`.
-3. Put your mods in the **Mods folder**. The **Open** button opens it. By default this is
-   `%LOCALAPPDATA%\TokenVault\Instance\mods`. Saves, options and logs go to the **Instance folder**.
-   Token Vault refuses to use `.minecraft` itself (or your user folder, AppData, etc.) as the
-   instance, because the sandbox would then be able to read the official launcher's sign-in files.
-4. Press **Play**. The first time, approve the one-time networking prompt and sign in in your
-   browser. The game opens and joins your server directly.
-5. **Stop game** or closing Token Vault ends the game and the session.
+### Sign-in without registering an app
 
-Settings live in `%LOCALAPPDATA%\TokenVault\Data\config.json`. Advanced options (ports,
-`SessionMinutes`, `Allowlist`, `ObserveDeniedEndpoints`) can be edited there; see
-`config.example.json`.
+Microsoft's sign-in always needs some registered application ID. By default Token Vault uses the
+public ID that **Prism Launcher** publishes in its source code (`c36a9fb6-…`). It is not a secret, so
+you can test without registering anything. Microsoft's consent page will say "Prism Launcher".
+Your password still only goes to Microsoft, and the tokens stay in Token Vault.
+If you distribute Token Vault, register your own app (personal Microsoft accounts, public client,
+redirect `http://127.0.0.1:25597/`, Minecraft API approval) and put its ID in
+**Settings → Microsoft application ID**. If the browser flow doesn't work, enable
+**Settings → Sign in with a code**.
 
-**Smart App Control / WDAC:** if Windows Smart App Control is on, it blocks unsigned executables,
-including a locally built `TokenVault.exe`. Sign the build with a trusted code-signing certificate,
-or decide for yourself whether to change that Windows setting. Token Vault does not touch it.
+**Smart App Control / WDAC:** if Windows Smart App Control is on, it blocks unsigned programs,
+including a locally built `TokenVault.exe`. Sign the build, or decide for yourself whether to change
+that Windows setting. Token Vault does not touch it.
 
 ## Build and test
 
 ```powershell
-dotnet restore TokenVault.sln
 dotnet build TokenVault.sln -c Release
 dotnet run --project tests/TokenVault.Tests -c Release
 ```
 
-`scripts/Build.ps1` does all of that and publishes a self-contained single-file
-`artifacts/TokenVault/TokenVault.exe`. Keep `AuthlibProbe.java` next to it. CI runs the build and
-the tests on Windows and Linux, and uploads the Windows build.
+Any .NET 8 or newer SDK works. `scripts/Build.ps1` also publishes a self-contained single file,
+`artifacts/TokenVault/TokenVault.exe`; keep `AuthlibProbe.java` next to it. CI builds and runs the
+tests on Windows and Linux, and uploads the Windows build.
 
 ## Projects
 
 | Project | Role |
 |---|---|
-| `TokenVault.App` | WinForms window: settings, sign-in, Play/Stop, log |
-| `TokenVault.Vault` | OAuth/Xbox/Minecraft auth, DPAPI refresh cache, HTTPS API, connection broker |
-| `TokenVault.Launcher` | Installed-profile resolver, AppContainer sandbox, folder policy, JKS truststore |
-| `TokenVault.Core` | Config, packet I/O, Minecraft crypto, fake JWT |
+| `TokenVault.App` | WPF window: library, Play, servers, protection status, settings |
+| `TokenVault.Vault` | Microsoft/Xbox/Minecraft sign-in, DPAPI refresh cache, HTTPS API, connection brokers |
+| `TokenVault.Launcher` | Game installer, installed-profile resolver, AppContainer sandbox, folder policy, JKS truststore, `servers.dat` |
+| `TokenVault.Packs` | Modpack/archive import (Modrinth, CurseForge, Prism/MultiMC, zip/7z/rar/tar, folders, jars) |
+| `TokenVault.Core` | Settings, packet I/O, Minecraft crypto, fake JWT |
 
 ## Compatibility notes
 
@@ -164,7 +167,7 @@ the tests on Windows and Linux, and uploads the Windows build.
 * The game's truststore contains the vault's loopback certificate plus your Windows trusted roots,
   so normal HTTPS from the game and mods (resource packs, skins) keeps working.
 * The sandbox can't write `%APPDATA%` or your user folder. Mods that insist on writing there will
-  log errors. `user.home`, `java.io.tmpdir` and LWJGL/JNA extraction are pointed at sandbox folders.
+  log errors. `user.home` and `java.io.tmpdir` are pointed at sandbox folders.
 
 ## Source history
 

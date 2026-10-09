@@ -22,6 +22,11 @@
         "resolved": "8.14.0",
         "contentHash": "iwbCpSjD3ehfTwBhtSNEtKPK0ICun6ov7Ibx6ISNA9bfwIyzI2Siwyi9eJFCJBwxowK9xcA1mj+jBWiigeqgcQ=="
       },
+      "SharpCompress": {
+        "type": "Transitive",
+        "resolved": "1.0.0",
+        "contentHash": "bdBq9V2epw7KBX3TeA+lxnKU8dD61tsqVuyuo5cAXj4d+9+fcIQObTr0705oTWnPDRhjRx3TpgOFbYYAMObpaw=="
+      },
       "System.Diagnostics.DiagnosticSource": {
         "type": "Transitive",
         "resolved": "6.0.1",
@@ -47,6 +52,14 @@
         "type": "Project",
         "dependencies": {
           "TokenVault.Core": "[1.0.0, )"
+        }
+      },
+      "tokenvault.packs": {
+        "type": "Project",
+        "dependencies": {
+          "SharpCompress": "[1.0.0, )",
+          "TokenVault.Core": "[1.0.0, )",
+          "TokenVault.Launcher": "[1.0.0, )"
         }
       },
       "tokenvault.vault": {

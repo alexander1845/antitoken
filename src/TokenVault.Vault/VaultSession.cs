@@ -37,13 +37,20 @@ public sealed class VaultSession : IAsyncDisposable
         try
         {
             string fake = FakeToken.Create(identity.Profile, expires);
-            var descriptor = new SessionDescriptor(identity.Profile, fake, Convert.ToBase64String(cert.Export(X509ContentType.Cert)),
-                config.HttpsPort, config.GamePort, config.MinecraftVersion, expires);
             app = new HttpsVault(config, identity, fake, cert, http, log.Write).Create();
             await app.StartAsync(lifetime.Token);
-            var broker = new ConnectionBroker(config, identity.Profile, new MojangConnectionAuthenticator(http, identity), log.Write);
-            Task networking = broker.RunAsync(lifetime.Token);
-            if (networking.IsFaulted) await networking; // listener bind failures surface here, not mid-game
+            var authenticator = new MojangConnectionAuthenticator(http, identity);
+            var servers = new List<LocalServer>();
+            var brokers = new List<Task>();
+            foreach (var server in config.Servers)
+            {
+                var listener = ConnectionBroker.Listen();
+                servers.Add(new LocalServer(server.Name, ((System.Net.IPEndPoint)listener.LocalEndpoint).Port));
+                brokers.Add(new ConnectionBroker(server, identity.Profile, authenticator, log.Write).RunAsync(listener, lifetime.Token));
+            }
+            Task networking = Task.WhenAll(brokers);
+            var descriptor = new SessionDescriptor(identity.Profile, fake, Convert.ToBase64String(cert.Export(X509ContentType.Cert)),
+                config.HttpsPort, servers, config.MinecraftVersion, expires);
             log.Write("session:started");
             return new VaultSession(lifetime, app, networking, cert, http, log, descriptor);
         }

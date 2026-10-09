@@ -12,17 +12,24 @@ public interface IConnectionAuthenticator
     Task AuthorizeOwnedConnectionAsync(string serverHash, CancellationToken ct);
 }
 
-public sealed class ConnectionBroker(Configuration config, PlayerProfile profile,
+// One broker per server the player added in Token Vault. It authenticates only connections to that server.
+public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
     IConnectionAuthenticator authenticator, Action<string> audit)
 {
     private readonly SemaphoreSlim oneConnection = new(1, 1);
     private long lastLogin;
 
-    public async Task RunAsync(CancellationToken ct)
+    // Loopback only, on a port Windows picks, so nothing collides with other software.
+    public static TcpListener Listen()
     {
-        var listener = new TcpListener(IPAddress.Loopback, config.GamePort);
+        var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Server.ExclusiveAddressUse = true;
         listener.Start(4);
+        return listener;
+    }
+
+    public async Task RunAsync(TcpListener listener, CancellationToken ct)
+    {
         var connections = new List<Task>();
         try
         {
@@ -75,15 +82,13 @@ public sealed class ConnectionBroker(Configuration config, PlayerProfile profile
             if (PacketIO.ReadVarInt(start, ref offset) != 0 || PacketIO.ReadString(start, ref offset, 16) != profile.Name ||
                 start.Length - offset != 16 || !start.AsSpan(offset).SequenceEqual(Convert.FromHexString(profile.Id)))
                 throw new InvalidDataException("Wrong local profile.");
-            if (string.IsNullOrWhiteSpace(config.ServerHost)) throw new InvalidOperationException("No target server configured.");
-
             using var remote = new TcpClient { NoDelay = true };
-            await remote.ConnectAsync(config.ServerHost, config.ServerPort, ct);
+            await remote.ConnectAsync(target.Host, target.Port, ct);
             Stream upstream = remote.GetStream();
             CipherStream? encrypted = null;
             try
             {
-                await PacketIO.WriteAsync(upstream, PacketIO.Handshake(config.ServerHost, config.ServerPort, 2), -1, ct);
+                await PacketIO.WriteAsync(upstream, PacketIO.Handshake(target.Host, target.Port, 2), -1, ct);
                 await PacketIO.WriteAsync(upstream, PacketIO.LoginStart(profile), -1, ct);
                 int compression = -1;
                 bool authenticated = false;
@@ -177,14 +182,40 @@ public sealed class ConnectionBroker(Configuration config, PlayerProfile profile
     {
         byte[] request = await PacketIO.ReadAsync(stream, -1, ct);
         if (request.Length != 1 || request[0] != 0) throw new InvalidDataException("Invalid status request.");
-        string json = JsonSerializer.Serialize(new
+        byte[] response = await UpstreamStatusAsync(ct) ?? PacketIO.Packet(0, s => PacketIO.WriteString(s, JsonSerializer.Serialize(new
         {
-            version = new { name = "26.1.2 Token Vault", protocol = 775 },
-            players = new { max = 1, online = oneConnection.CurrentCount == 0 ? 1 : 0 },
-            description = new { text = "Token Vault — configured server" }, enforcesSecureChat = true
-        });
-        await PacketIO.WriteAsync(stream, PacketIO.Packet(0, s => PacketIO.WriteString(s, json)), -1, ct);
+            version = new { name = "26.1.2", protocol = 775 },
+            players = new { max = 0, online = 0 },
+            description = new { text = target.Name + " (could not reach the server)" }
+        })));
+        await PacketIO.WriteAsync(stream, response, -1, ct);
         byte[] ping = await PacketIO.ReadAsync(stream, -1, ct);
         if (ping.Length == 9 && ping[0] == 1) await PacketIO.WriteAsync(stream, ping, -1, ct);
+    }
+
+    // Server-list ping (MOTD, player count). Unauthenticated and unencrypted; only the response packet is relayed.
+    private async Task<byte[]?> UpstreamStatusAsync(CancellationToken lifetime)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        try
+        {
+            using var remote = new TcpClient { NoDelay = true };
+            await remote.ConnectAsync(target.Host, target.Port, deadline.Token);
+            var upstream = remote.GetStream();
+            await PacketIO.WriteAsync(upstream, PacketIO.Handshake(target.Host, target.Port, 1), -1, deadline.Token);
+            await PacketIO.WriteAsync(upstream, [0], -1, deadline.Token);
+            byte[] response = await PacketIO.ReadAsync(upstream, -1, deadline.Token);
+            int offset = 0;
+            if (PacketIO.ReadVarInt(response, ref offset) != 0) return null;
+            _ = PacketIO.ReadString(response, ref offset);
+            PacketIO.RequireEnd(response, offset);
+            return response;
+        }
+        catch (Exception ex) when (ex is IOException or SocketException or InvalidDataException or OperationCanceledException)
+        {
+            if (lifetime.IsCancellationRequested) throw;
+            return null;
+        }
     }
 }

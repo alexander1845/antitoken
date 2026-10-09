@@ -27,7 +27,7 @@ public static class InstalledFabric
             if (id.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || id is "." or ".." || id.Contains('/') || id.Contains('\\') || !seen.Add(id))
                 throw new InvalidDataException("Invalid version inheritance.");
             string file = Path.Combine(root, "versions", id, id + ".json");
-            if (!File.Exists(file)) throw new UserVisibleException($"Version {id} is not installed in {root}. Install it with the official launcher (and Fabric installer), run it once, then close it.");
+            if (!File.Exists(file)) throw new UserVisibleException($"Version {id} is not installed yet. Press Play again to install it.");
             versionDirectories.Add(Path.GetDirectoryName(file)!);
             var node = JsonNode.Parse(File.ReadAllText(file))!.AsObject();
             chain.Add(node); id = node["inheritsFrom"]?.GetValue<string>();
@@ -99,7 +99,6 @@ public static class InstalledFabric
         var jvm = chain.SelectMany(x => Arguments(x["arguments"]?["jvm"])).Select(Expand).ToList();
         var args = chain.SelectMany(x => Arguments(x["arguments"]?["game"])).Select(Expand).ToList();
         if (!jvm.Contains("-cp")) { jvm.Add("-cp"); jvm.Add(cp); }
-        args.AddRange(["--quickPlayMultiplayer", $"127.0.0.1:{session.GamePort}"]);
         return new(main, jvm, args, cp,
             [Path.Combine(root, "libraries"), Path.Combine(root, "assets"), .. versionDirectories]); // versions/26.1.2 is in the chain
     }
@@ -135,7 +134,7 @@ public static class InstalledFabric
         }
     }
 
-    private static string MavenPath(string name)
+    public static string MavenPath(string name)
     {
         string[] p = name.Split(':');
         if (p.Length is < 3 or > 4) throw new InvalidDataException("Invalid Maven coordinate.");

@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using TokenVault.Core;
 using TokenVault.Launcher;
+using TokenVault.Packs;
 using TokenVault.Vault;
 using Microsoft.Identity.Client;
 
@@ -18,13 +19,13 @@ if (args.Length == 2 && args[0] == "--probe-fixture")
 if (args.Length == 2 && args[0] == "--resolve-fixture")
 {
     var config = new Configuration { MinecraftDirectory = args[1], GameDirectory = args[1], ModsDirectory = Path.Combine(args[1], "mods") };
-    var descriptor = new SessionDescriptor(Profile(), FakeToken.Create(Profile(), DateTimeOffset.UtcNow.AddHours(1)), "", 25599, 25598, "26.1.2", DateTimeOffset.UtcNow.AddHours(1));
+    var descriptor = new SessionDescriptor(Profile(), FakeToken.Create(Profile(), DateTimeOffset.UtcNow.AddHours(1)), "", 25599, [], "26.1.2", DateTimeOffset.UtcNow.AddHours(1));
     string temp = Path.Combine(Path.GetTempPath(), "vault-resolve-test-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(temp);
     try
     {
         var launch = InstalledFabric.Resolve(config, descriptor, temp);
         Check(launch.MainClass == "net.fabricmc.loader.impl.launch.knot.KnotClient", "Wrong Fabric entry point.");
-        Check(launch.GameArguments.Contains(descriptor.FakeToken) && launch.GameArguments.Contains("127.0.0.1:25598"), "Missing fake or broker target.");
+        Check(launch.GameArguments.Contains(descriptor.FakeToken), "Missing fake token.");
         Check(!launch.JvmArguments.Concat(launch.GameArguments).Any(a => a.Contains("${", StringComparison.Ordinal)), "Unresolved template variable.");
         Console.WriteLine("PASS exact 26.1.2/Fabric installed-profile resolution (not a game launch)");
     }
@@ -41,7 +42,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("API deny ceiling, TLS, token substitution and response non-disclosure", HttpTests),
     ("owned online login, Fabric query, compression and encrypted relay", BrokerTests),
     ("offline upstream refusal before gameplay", OfflineTests),
-    ("sandbox folder policy, command-line quoting and Java truststore format", SandboxTests)
+    ("sandbox folder policy, command-line quoting and Java truststore format", SandboxTests),
+    ("server list file, server addresses, pack detection and pack path safety", PackTests)
 };
 int failures = 0;
 foreach (var test in tests)
@@ -235,7 +237,7 @@ static async Task BrokerTests()
     var local = new TcpListener(IPAddress.Loopback, 0); local.Start();
     using var game = new TcpClient(); await game.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)local.LocalEndpoint).Port, ct);
     using var brokerSocket = await local.AcceptTcpClientAsync(ct);
-    var broker = new ConnectionBroker(new Configuration { ServerHost = "127.0.0.1", ServerPort = remotePort }, Profile(), auth, _ => { });
+    var broker = new ConnectionBroker(new ServerEntry("test", "127.0.0.1", remotePort), Profile(), auth, _ => { });
     Task relay = broker.HandleAsync(brokerSocket.GetStream(), ct);
     try
     {
@@ -264,7 +266,7 @@ static async Task OfflineTests()
     using var game = new TcpClient(); await game.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)local.LocalEndpoint).Port, ct);
     using var accepted = await local.AcceptTcpClientAsync(ct);
     var auth = new MockAuthenticator(new TaskCompletionSource<string>());
-    var broker = new ConnectionBroker(new Configuration { ServerHost = "127.0.0.1", ServerPort = ((IPEndPoint)remote.LocalEndpoint).Port }, Profile(), auth, _ => { });
+    var broker = new ConnectionBroker(new ServerEntry("test", "127.0.0.1", ((IPEndPoint)remote.LocalEndpoint).Port), Profile(), auth, _ => { });
     Task handling = broker.HandleAsync(accepted.GetStream(), ct);
     try
     {
@@ -317,6 +319,60 @@ static Task SandboxTests()
     Check(data.AsSpan().IndexOf(cert.RawData) > 0 && data.AsSpan().IndexOf("PRIVATE"u8) < 0, "Truststore content unexpected.");
     try { JavaTrustStore.Create([("Dup", cert.RawData)], DateTimeOffset.UnixEpoch); throw new Exception("Uppercase alias accepted."); }
     catch (ArgumentException) { }
+    return Task.CompletedTask;
+}
+
+static Task PackTests()
+{
+    // servers.dat: uncompressed NBT {servers: [{name, ip}]} pointing at local brokers.
+    byte[] nbt = ServersFile.Create([new LocalServer("My Server", 50123)]);
+    byte[] expected = [10, 0, 0, 9, 0, 7, .. "servers"u8, 10, 0, 0, 0, 1,
+        8, 0, 4, .. "name"u8, 0, 9, .. "My Server"u8, 8, 0, 2, .. "ip"u8, 0, 15, .. "127.0.0.1:50123"u8, 0, 0];
+    Check(nbt.SequenceEqual(expected), "servers.dat encoding mismatch.");
+    Check(ServersFile.Create([new LocalServer("é", 1)]).AsSpan().IndexOf(new byte[] { 0, 2, 0xC3, 0xA9 }) > 0, "Modified UTF-8 mismatch.");
+
+    var parsed = ServerEntry.Parse(" Play.Example.net:25566 ");
+    Check(parsed.Host == "play.example.net" && parsed.Port == 25566, "Server address parse failed.");
+    Check(ServerEntry.Parse("mc.example.org").Port == 25565, "Default port missing.");
+    foreach (string bad in new[] { "", "a b", "host:99999", "host:-1", "user@host", "host/path", "[::1]:25565", "host:1:2" })
+        try { ServerEntry.Parse(bad); throw new Exception("Bad server address accepted: " + bad); } catch (InvalidDataException) { }
+
+    // Pack format detection from archive contents (no network).
+    string dir = Path.Combine(Path.GetTempPath(), "vault-pack-test-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(dir);
+    try
+    {
+        string Zip(string name, params (string Path, string Text)[] files)
+        {
+            string file = Path.Combine(dir, name);
+            using var zip = System.IO.Compression.ZipFile.Open(file, System.IO.Compression.ZipArchiveMode.Create);
+            foreach (var (path, text) in files)
+                using (var w = new StreamWriter(zip.CreateEntry(path).Open())) w.Write(text);
+            return file;
+        }
+        (PackImporter.PackKind, string) DetectFile(string file) { using var s = PackSource.Open(file); return PackImporter.Detect(s); }
+        Check(DetectFile(Zip("a.mrpack", ("modrinth.index.json", "{}"), ("overrides/config/x.txt", "x"))) == (PackImporter.PackKind.Modrinth, ""), "Modrinth not detected.");
+        Check(DetectFile(Zip("b.zip", ("manifest.json", "{\"manifestType\":\"minecraftModpack\"}"))) == (PackImporter.PackKind.CurseForge, ""), "CurseForge not detected.");
+        Check(DetectFile(Zip("c.zip", ("manifest.json", "{\"other\":1}"), ("Wrap/.minecraft/mods/a.jar", "j"))) == (PackImporter.PackKind.Loose, "Wrap/.minecraft/"), "Wrapped .minecraft not found.");
+        Check(DetectFile(Zip("d.zip", ("My Pack/mmc-pack.json", "{}"), ("My Pack/instance.cfg", "name=x"))) == (PackImporter.PackKind.Prism, "My Pack/"), "Prism export not detected.");
+        Check(DetectFile(Zip("e.zip", ("a.jar", "j"), ("sub/b.jar", "j"))).Item1 == PackImporter.PackKind.Loose, "Loose jars not detected.");
+
+        // Unsafe names in packs are refused; credential files from other launchers are never copied.
+        foreach (string bad in new[] { "../x", "a/../../x", "/abs", "C:/x", "a/CON", "a/b.", @"x\..\..\y" })
+            try { SafeFiles.Under(dir, bad); throw new Exception("Unsafe pack path accepted: " + bad); } catch (UserVisibleException) { }
+        Check(SafeFiles.Under(dir, "mods/a.jar") == Path.Combine(dir, "mods", "a.jar"), "Safe pack path rejected.");
+        Check(SafeFiles.IsCredentialFile("x/launcher_accounts.json") && SafeFiles.IsCredentialFile("accounts.json") && !SafeFiles.IsCredentialFile("mods/a.jar"),
+            "Credential file filter wrong.");
+        foreach (string bad in new[] { "../x", "versions/../../x", "a//b" })
+            try { GameInstaller.Under(dir, bad); throw new Exception("Unsafe install path accepted: " + bad); } catch (InvalidDataException) { }
+
+        // Only Minecraft 26.1.2 + Fabric packs are accepted, before anything is downloaded.
+        PackImporter.RequireCompatible("26.1.2", "0.19.5", null);
+        PackImporter.RequireCompatible(null, null, null);
+        try { PackImporter.RequireCompatible("1.21.1", "0.16.0", null); throw new Exception("Wrong version accepted."); } catch (UserVisibleException) { }
+        try { PackImporter.RequireCompatible("26.1.2", null, "Forge"); throw new Exception("Forge accepted."); } catch (UserVisibleException) { }
+    }
+    finally { Directory.Delete(dir, true); }
     return Task.CompletedTask;
 }
 

@@ -12,6 +12,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{710B72A5-0F8
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TokenVault.App", "src\TokenVault.App\TokenVault.App.csproj", "{BAE2CCC2-746D-49DF-9AE8-DDDD2CB6F096}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TokenVault.Packs", "src\TokenVault.Packs\TokenVault.Packs.csproj", "{C08FD545-029C-4248-825E-6836E1C4CA43}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -38,8 +40,13 @@ Global
 		{BAE2CCC2-746D-49DF-9AE8-DDDD2CB6F096}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{BAE2CCC2-746D-49DF-9AE8-DDDD2CB6F096}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{BAE2CCC2-746D-49DF-9AE8-DDDD2CB6F096}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C08FD545-029C-4248-825E-6836E1C4CA43}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C08FD545-029C-4248-825E-6836E1C4CA43}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C08FD545-029C-4248-825E-6836E1C4CA43}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C08FD545-029C-4248-825E-6836E1C4CA43}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{BAE2CCC2-746D-49DF-9AE8-DDDD2CB6F096} = {710B72A5-0F8E-4B49-8A9F-2A726BAE03F0}
+		{C08FD545-029C-4248-825E-6836E1C4CA43} = {710B72A5-0F8E-4B49-8A9F-2A726BAE03F0}
 	EndGlobalSection
 EndGlobal
