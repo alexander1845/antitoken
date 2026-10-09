@@ -53,7 +53,7 @@ public sealed class SystemBrowserUi(int port, Func<Uri, Task>? openBrowserForTes
             var callbackFields = fields.Where(p => p.Key is "code" or "state" or "error" or "error_description").ToDictionary(p => p.Key, p => p.Value);
             var callback = new Uri(QueryHelpers.AddQueryString(redirectUri.AbsoluteUri, callbackFields));
             context.Response.ContentType = "text/plain; charset=utf-8";
-            await context.Response.WriteAsync("Authentication response received. Return to Token Vault; you may close this tab.", context.RequestAborted);
+            await context.Response.WriteAsync("Signed in. Return to the Token Vault window; you may close this tab.", context.RequestAborted);
             await context.Response.CompleteAsync();
             completed.TrySetResult(callback);
         });

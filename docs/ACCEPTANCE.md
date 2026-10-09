@@ -24,13 +24,13 @@ in the production vault.
 
 ## Windows/live-account checks still required
 
-1. **Actual launch and online join.** Build on Windows, provision the isolated
-   account, configure an approved app, install 26.1.2 Fabric, and launch against an
-   online-mode server you control. Check signed chat, required mod/plugin handshakes,
-   disconnect/reconnect and the configured mods folder. No real-token fallback is allowed.
-2. **Credential boundary.** In an isolated test harness, inspect JVM command line,
-   environment, pipe descriptor and memory for an instrumented canary; inspect the
-   launcher too. For real-token memory auditing, use a private debugger/harness that
+1. **Actual sandboxed launch and online join.** Build on Windows, configure an approved
+   app, install 26.1.2 Fabric, approve the one-time loopback prompt, and launch against
+   an online-mode server you control. Check rendering (OpenGL driver inside the
+   AppContainer), audio, signed chat, mod/plugin handshakes, skins, resource packs,
+   disconnect/reconnect and the configured mods folder. No unsandboxed fallback is allowed.
+2. **Credential boundary.** Inspect the JVM command line and environment for an
+   instrumented canary; only the fake token may appear. For real-token memory auditing, use a private debugger/harness that
    compares in memory without persisting/printing the credential. A grep of one heap
    dump alone does not prove absence from every native buffer or OS dump.
 3. **Direct authentication fails.** Connect the fake-token client **directly to the
@@ -57,16 +57,21 @@ in the production vault.
    hash to the vault through all join aliases, including with the legitimate fake
    bearer. They must return 403 and make zero outbound authentication calls. Only a
    connection freshly created by the broker can invoke its internal authenticator.
-7. **Isolation.** As the gaming account, attempt to read `vault.bin` and the vault
-   process memory; both must fail in isolated mode. Attempt to replace its executable,
-   configuration, DLLs, data directory and ancestor directories. Verify failure. Check
-   the named pipe cannot be read via a network logon or spoofed by another account.
+7. **Sandbox configuration (inspection, not exploitation).** While the game runs, confirm
+   in Process Explorer that every java.exe in the job shows integrity "AppContainer" and
+   the `TokenVault.MinecraftSandbox` package SID. Confirm with `icacls` that the sandbox
+   SID appears only on: the instance folder, `assets\skins` and the per-launch `Run\<id>`
+   folder (Modify, Low label); `libraries`, `assets`, the profile's `versions\<id>`
+   folders, the Java home and an external mods folder (read/execute). It must NOT appear
+   on `.minecraft` itself, `%LOCALAPPDATA%\TokenVault\Data` (protected DACL: you + SYSTEM
+   only), the TokenVault.exe folder, or anywhere else in your profile.
 8. **At rest.** After shutdown, inspect the vault's DPAPI plaintext with a dedicated
-   test harness under the vault identity: the MSAL AccessToken and IdToken buckets
+   test harness under your Windows identity: the MSAL AccessToken and IdToken buckets
    must be empty, while RefreshToken and necessary account metadata remain. Check
    requests.log contains no credentials. Do not persist the decrypted data.
-9. **Stop/expiry.** Close the vault and test expiry with a short session: API listeners,
-   named pipe and active broker connection must close. No already authenticated
+9. **Stop/expiry.** Press Stop, close the window, and test expiry with a short
+   `SessionMinutes`: the API listener and active broker connection must close and the
+   whole game job must terminate. No already authenticated
    connection should survive the host process shutting down.
 
 ## Expected failures / supported scope

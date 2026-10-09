@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AssemblyName>TokenVault</AssemblyName>
+    <RootNamespace>TokenVault.App</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../TokenVault.Core/TokenVault.Core.csproj" />
+    <ProjectReference Include="../TokenVault.Vault/TokenVault.Vault.csproj" />
+    <ProjectReference Include="../TokenVault.Launcher/TokenVault.Launcher.csproj" />
+  </ItemGroup>
+</Project>

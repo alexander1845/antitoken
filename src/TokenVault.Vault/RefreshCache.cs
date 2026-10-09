@@ -27,6 +27,15 @@ public sealed class RefreshCache(string file)
     private static readonly byte[] Entropy = "TokenVault.RefreshCache.v1"u8.ToArray(); // Public domain separation, not a secret.
     private bool loaded;
 
+    public bool Exists => File.Exists(file);
+
+    // Local sign-out only. The refresh token stays valid at Microsoft until it expires or is revoked there.
+    public void Delete()
+    {
+        File.Delete(file);
+        File.Delete(file + ".new");
+    }
+
     public void Attach(ITokenCache cache)
     {
         cache.SetBeforeAccess(args =>

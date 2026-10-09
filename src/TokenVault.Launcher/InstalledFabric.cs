@@ -6,7 +6,9 @@ using TokenVault.Core;
 
 namespace TokenVault.Launcher;
 
-public sealed record FabricLaunch(string MainClass, List<string> JvmArguments, List<string> GameArguments, string ClassPath);
+// ReadDirectories: the parts of the shared Minecraft install the sandbox needs to read (never the install root).
+public sealed record FabricLaunch(string MainClass, List<string> JvmArguments, List<string> GameArguments, string ClassPath,
+    List<string> ReadDirectories);
 
 public static class InstalledFabric
 {
@@ -17,6 +19,7 @@ public static class InstalledFabric
         string game = Configuration.Expand(c.GameDirectory);
         if (!Directory.Exists(Configuration.Expand(c.ModsDirectory))) throw new DirectoryNotFoundException("Mods directory not found.");
         var chain = new List<JsonObject>();
+        var versionDirectories = new List<string>();
         var seen = new HashSet<string>();
         string? id = c.FabricProfile;
         while (id is not null)
@@ -24,7 +27,8 @@ public static class InstalledFabric
             if (id.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || id is "." or ".." || id.Contains('/') || id.Contains('\\') || !seen.Add(id))
                 throw new InvalidDataException("Invalid version inheritance.");
             string file = Path.Combine(root, "versions", id, id + ".json");
-            if (!File.Exists(file)) throw new FileNotFoundException("Install this Minecraft/Fabric version in the normal launcher first.", file);
+            if (!File.Exists(file)) throw new UserVisibleException($"Version {id} is not installed in {root}. Install it with the official launcher (and Fabric installer), run it once, then close it.");
+            versionDirectories.Add(Path.GetDirectoryName(file)!);
             var node = JsonNode.Parse(File.ReadAllText(file))!.AsObject();
             chain.Add(node); id = node["inheritsFrom"]?.GetValue<string>();
         }
@@ -96,7 +100,8 @@ public static class InstalledFabric
         var args = chain.SelectMany(x => Arguments(x["arguments"]?["game"])).Select(Expand).ToList();
         if (!jvm.Contains("-cp")) { jvm.Add("-cp"); jvm.Add(cp); }
         args.AddRange(["--quickPlayMultiplayer", $"127.0.0.1:{session.GamePort}"]);
-        return new(main, jvm, args, cp);
+        return new(main, jvm, args, cp,
+            [Path.Combine(root, "libraries"), Path.Combine(root, "assets"), .. versionDirectories]); // versions/26.1.2 is in the chain
     }
 
     public static bool Allowed(JsonNode? rules)
