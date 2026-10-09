@@ -7,5 +7,11 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <Version>1.0.0</Version>
+    <Product>Token Vault</Product>
+    <Company>Token Vault</Company>
+    <Authors>Alexander Dinardi</Authors>
+    <Copyright>Copyright (c) 2026 Token Vault Contributors. MIT License.</Copyright>
+    <Description>Sandboxed Minecraft launcher that keeps your account tokens away from mods.</Description>
   </PropertyGroup>
 </Project>

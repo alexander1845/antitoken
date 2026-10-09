@@ -32,7 +32,7 @@ public sealed class RefreshCache(string file)
     private static readonly string Context = "TokenVault.RefreshCache.v2|" + System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value;
     private readonly DpapiKeyWrap dpapi = new(Entropy);
     private TpmKeyWrap? tpm;
-    private bool loaded;
+    private bool loaded, tpmChecked; // the TPM is probed once per run, not on every save
 
     public bool Exists => File.Exists(file);
 
@@ -96,7 +96,7 @@ public sealed class RefreshCache(string file)
             try
             {
                 filtered = RefreshCacheFilter.Filter(full);
-                tpm ??= TpmKeyWrap.TryOpen(dpapi, create: true);
+                if (tpm is null && !tpmChecked) { tpmChecked = true; tpm = TpmKeyWrap.TryOpen(dpapi, create: true); }
                 byte[] protectedBytes = Envelope.Seal(filtered, Context, (IKeyWrap?)tpm ?? dpapi);
                 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(file))!);
                 string temp = file + ".new";

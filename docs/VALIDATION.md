@@ -4,6 +4,17 @@ Target: Windows x64 launcher, Minecraft **26.1.2**, protocol **775**, Fabric exa
 loader **0.19.5**, Java **25**, Authlib **7.0.63**. Tests below were performed in a
 Linux build environment. No Microsoft account credentials were supplied.
 
+## Update — release 1.0: encrypted sign-in storage, joins, sandbox fixes
+
+| Check | Result | Scope |
+|---|---|---|
+| Sandboxed launch on Windows (Fabric), join to an online-mode server through the broker | PASS | Reported by the project owner on their Windows PC after the integrity-label and SRV fixes |
+| `dotnet build`, warnings as errors; regression suite **11/11** | PASS | Linux, .NET SDK 8.0.422; CI repeats on Windows and Linux |
+| New `EnvelopeTests`: AES-256-GCM round trip, fresh key per seal, every-byte tamper rejection, context/key-wrap binding, truncation | PASS | Linux; on Windows CI also a real DPAPI round trip |
+| TPM-bound key wrap (Platform Crypto Provider, RSA-OAEP-SHA256) | **NOT RUN** | Needs a PC with a TPM. A failed round trip falls back to DPAPI, and an unreadable file only means signing in again |
+| Migration of an existing v1 (DPAPI-only) saved sign-in to v2 | **NOT RUN** | Code path reads v1 and rewrites v2 on the next save |
+| Local API restricted to TLS 1.2/1.3 | PASS | Existing TLS test (`HttpTests`) still passes |
+
 ## Update — one-click Play, modpack import, WPF interface
 
 | Check | Result | Scope |
