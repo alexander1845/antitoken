@@ -1,1 +1,11 @@
+**/bin/
+**/obj/
+artifacts/
+*.bin
+*.pfx
+*.jks
+*.cer
+*.log
+config.local.json
+.vs/
 *.zip
