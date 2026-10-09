@@ -59,17 +59,22 @@ public sealed class GameSandbox
     // The drive root must let this sandbox list folder names, or Java can't resolve any path (see AppPaths.GameRoot).
     public bool HasDriveRootListing() => HasListGrant(new DirectoryInfo(Path.GetPathRoot(AppPaths.GameRoot)!).GetAccessControl());
 
-    // null: unknown. Both one-time steps need administrator approval, so they are done together.
-    public bool? IsSetUp() => HasLoopbackExemption() is bool loopback ? loopback && HasDriveRootListing() : null;
+    // false: a one-time step is missing. null: Windows wouldn't report the loopback list. All steps need administrator
+    // approval, so they are done together.
+    public bool? IsSetUp() => !HasDriveRootListing() || !IsLowLabeled(AppPaths.GameRoot) ? false : HasLoopbackExemption();
 
     public async Task<bool> RequestSetupAsync()
     {
         // Built-in Windows tools, one elevated run:
         //  * CheckNetIsolation adds this one sandbox to the loopback exemption list (other entries are preserved);
-        //  * icacls lets this one sandbox list the names in the drive root (this folder only; no file contents).
-        string system = Environment.SystemDirectory, drive = Path.GetPathRoot(AppPaths.GameRoot)!;
+        //  * icacls lets this one sandbox list the names in the drive root (this folder only; no file contents);
+        //  * icacls gives the game root a low integrity label (see GameFolders) when Token Vault couldn't do it itself,
+        //    e.g. for a folder created by an earlier build. Labels don't grant access; folder permissions still decide.
+        string system = Environment.SystemDirectory, drive = Path.GetPathRoot(AppPaths.GameRoot)!, icacls = Path.Combine(system, "icacls.exe");
         string commands = $"\"{Path.Combine(system, "CheckNetIsolation.exe")}\" LoopbackExempt -a -p={Sid.Value} & " +
-                          $"\"{Path.Combine(system, "icacls.exe")}\" \"{drive}.\" /grant \"*{Sid.Value}:(S,RD,X,RA)\"";
+                          $"\"{icacls}\" \"{drive}.\" /grant \"*{Sid.Value}:(S,RD,X,RA)\"";
+        if (!IsLowLabeled(AppPaths.GameRoot) && Directory.Exists(AppPaths.GameRoot))
+            commands += $" & \"{icacls}\" \"{AppPaths.GameRoot}\" /setintegritylevel (OI)(CI)L /T /C /Q";
         var info = new ProcessStartInfo(Path.Combine(system, "cmd.exe"), "/d /c \"" + commands + "\"")
             { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden };
         try
@@ -129,7 +134,8 @@ public sealed class GameSandbox
         var acl = info.GetAccessControl();
         if (HasGrant(acl, rights, write)) return;
         // Low integrity label: an AppContainer process cannot write medium-integrity objects even if the DACL allows it.
-        if (write) SetLowIntegrityLabel(directory);
+        // Folders under the game root inherit the root's label, so this only runs for folders outside it.
+        if (write && !IsLowLabeled(directory)) SetLowIntegrityLabel(directory);
         acl.AddAccessRule(new FileSystemAccessRule(Sid, rights, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
             PropagationFlags.None, AccessControlType.Allow));
         try { info.SetAccessControl(acl); }
@@ -151,7 +157,22 @@ public sealed class GameSandbox
         return false;
     }
 
-    private static void SetLowIntegrityLabel(string directory)
+    // True when the folder carries an inheritable low label, set on it or inherited from a parent.
+    public static bool IsLowLabeled(string directory)
+    {
+        if (GetNamedSecurityInfoW(directory, 1 /* SE_FILE_OBJECT */, 0x10 /* LABEL_SECURITY_INFORMATION */,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out IntPtr descriptor) != 0)
+            return false;
+        try
+        {
+            if (!ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, 1, 0x10, out IntPtr text, IntPtr.Zero)) return false;
+            try { return System.Text.RegularExpressions.Regex.IsMatch(Marshal.PtrToStringUni(text) ?? "", @"\(ML;OICI(ID)?;NW;;;LW\)"); }
+            finally { LocalFree(text); }
+        }
+        finally { LocalFree(descriptor); }
+    }
+
+    public static void SetLowIntegrityLabel(string directory)
     {
         if (!ConvertStringSecurityDescriptorToSecurityDescriptorW("S:(ML;OICI;NW;;;LW)", 1, out IntPtr descriptor, IntPtr.Zero))
             throw Failed("prepare a folder for the sandbox");
@@ -330,6 +351,10 @@ public sealed class GameSandbox
     private static extern bool GetSecurityDescriptorSacl(IntPtr descriptor, out bool present, out IntPtr sacl, out bool defaulted);
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
     private static extern uint SetNamedSecurityInfoW(string name, int type, uint information, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint GetNamedSecurityInfoW(string name, int type, uint information, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl, out IntPtr descriptor);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool ConvertSecurityDescriptorToStringSecurityDescriptorW(IntPtr descriptor, uint revision, uint information, out IntPtr text, IntPtr length);
     [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr memory);
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);

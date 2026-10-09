@@ -162,9 +162,10 @@ public partial class MainWindow : Window
     {
         if (sandbox is null) return false;
         if (!await AskAsync("One-time sandbox setup",
-                "Windows will ask for administrator approval once, for two small changes that only affect Token Vault's sandbox:\n\n" +
-                "•  let it connect to Token Vault on this PC, and\n" +
-                $"•  let it see the folder names at the top of {Path.GetPathRoot(AppPaths.GameRoot)} (names only, not files), which Java needs.\n\n" +
+                "Windows will ask for administrator approval once, for small changes that only affect Token Vault's sandbox:\n\n" +
+                "•  let it connect to Token Vault on this PC,\n" +
+                $"•  let it see the folder names at the top of {Path.GetPathRoot(AppPaths.GameRoot)} (names only, not files), which Java needs, and\n" +
+                $"•  mark {AppPaths.GameRoot} as a sandbox folder so the game can save there.\n\n" +
                 "No account is created and nothing else changes.", "Continue"))
             return false;
         bool ok = await sandbox.RequestSetupAsync();

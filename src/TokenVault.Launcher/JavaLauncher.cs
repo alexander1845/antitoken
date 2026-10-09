@@ -46,7 +46,10 @@ public static class JavaLauncher
             if (c.LoaderDirectory.Length > 0) sandbox.GrantWrite(Configuration.Expand(c.LoaderDirectory)); // Forge/NeoForge folder
             if (!modsInsideGame) sandbox.GrantRead(mods);
             Directory.CreateDirectory(skins);
-            sandbox.GrantWrite(skins); // skin cache only; holds downloaded PNGs
+            // Skin cache only; holds downloaded PNGs. Not needed to play, so a failure here doesn't stop the launch.
+            try { sandbox.GrantWrite(skins); }
+            catch (Exception ex) when (ex is UserVisibleException or UnauthorizedAccessException or IOException)
+            { log("Skin cache unavailable (" + ex.Message + "). The game still starts."); }
             // The server list points the game at Token Vault's local brokers. No sandboxed process is running
             // now (each game's job is gone), so nothing can race this write.
             ServersFile.Write(Path.Combine(game, "servers.dat"), session.Servers);

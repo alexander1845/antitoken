@@ -29,6 +29,12 @@ public static class GameFolders
                 acl.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
                     InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
             info.SetAccessControl(acl);
+            // Low integrity label, inherited by everything inside. The sandbox runs at low integrity and Windows blocks it
+            // from writing medium-integrity files even where folder permissions allow it. The label grants nothing by
+            // itself: the permissions above still keep every other account and sandbox out. Labelling the folder while
+            // it is empty means nothing has to be relabelled later; if Windows refuses, the one-time setup does it.
+            try { GameSandbox.SetLowIntegrityLabel(root); }
+            catch (UserVisibleException ex) { log?.Invoke(ex.Message); }
         }
         Verify(info, user, sandbox);
         foreach (string child in new[] { "Minecraft", "Instances", "Run" }) Directory.CreateDirectory(Path.Combine(root, child));
