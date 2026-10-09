@@ -40,7 +40,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("OAuth loopback rejects wrong state and requires PKCE", OAuthCallbackTests),
     ("API deny ceiling, TLS, token substitution and response non-disclosure", HttpTests),
     ("owned online login, Fabric query, compression and encrypted relay", BrokerTests),
-    ("offline upstream refusal before gameplay", OfflineTests)
+    ("offline upstream refusal before gameplay", OfflineTests),
+    ("sandbox folder policy, command-line quoting and Java truststore format", SandboxTests)
 };
 int failures = 0;
 foreach (var test in tests)
@@ -276,6 +277,47 @@ static async Task OfflineTests()
         Check(auth.Calls == 0, "Offline server obtained authentication.");
     }
     finally { remote.Stop(); local.Stop(); }
+}
+
+static Task SandboxTests()
+{
+    // Folders that hold sign-in data (or contain such folders) are never shared with the game sandbox.
+    var c = new Configuration { MinecraftDirectory = Path.Combine(Path.GetTempPath(), "mc-root"), GameDirectory = Path.Combine(Path.GetTempPath(), "mc-root") };
+    string root = Configuration.Expand(c.MinecraftDirectory);
+    foreach (string bad in new[] { root, Path.GetDirectoryName(root)!, AppPaths.Data, AppPaths.Root,
+                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), Path.Combine(AppPaths.Data, "sub") })
+        try { SandboxPolicy.CheckRead(c, bad); throw new Exception("Sandbox may access protected folder: " + bad); }
+        catch (UserVisibleException) { }
+    string libraries = Path.Combine(root, "libraries");
+    SandboxPolicy.CheckRead(c, libraries);
+    SandboxPolicy.CheckRead(c, Path.Combine(AppPaths.Root, "Instance"));
+    try { SandboxPolicy.CheckWrite(c, root, [libraries]); throw new Exception(".minecraft root accepted as writable instance."); }
+    catch (UserVisibleException) { }
+    try { SandboxPolicy.CheckWrite(c, Path.Combine(libraries, "x"), [libraries]); throw new Exception("Writable folder inside shared libraries accepted."); }
+    catch (UserVisibleException) { }
+    SandboxPolicy.CheckWrite(c, Path.Combine(AppPaths.Root, "Instance"), [libraries]);
+    Check(SandboxPolicy.IsWithin("C:/a/bc", "C:/a/b") == false && SandboxPolicy.IsWithin("C:/a/b/c", "C:/a/b"), "Prefix confusion in IsWithin.");
+
+    // Arguments must reach java.exe exactly as given (CommandLineToArgvW rules).
+    Check(WindowsCommandLine.Build("C:/j/java.exe", ["-Da=b", "two words", "", "q\"x", @"tail\", @"C:\dir with space\"]) ==
+        """C:/j/java.exe -Da=b "two words" "" "q\"x" tail\ "C:\dir with space\\" """.TrimEnd(), "Windows argument quoting mismatch.");
+    try { WindowsCommandLine.Build("java.exe", ["a\0b"]); throw new Exception("NUL accepted in argument."); } catch (InvalidDataException) { }
+
+    // JKS: trusted-certificate entries only, verifiable keyed SHA-1 trailer.
+    using var rsa = RSA.Create(2048);
+    var req = new System.Security.Cryptography.X509Certificates.CertificateRequest("CN=test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+    using var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(1));
+    byte[] store = JavaTrustStore.Create([("tokenvault-loopback", cert.RawData), ("root-a", cert.RawData)], DateTimeOffset.UnixEpoch);
+    byte[] data = store[..^20];
+    using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
+    sha.AppendData(Encoding.BigEndianUnicode.GetBytes(JavaTrustStore.Password)); sha.AppendData("Mighty Aphrodite"u8); sha.AppendData(data);
+    Check(store[^20..].SequenceEqual(sha.GetHashAndReset()), "JKS integrity digest mismatch.");
+    Check(data[..12].SequenceEqual(new byte[] { 0xFE, 0xED, 0xFE, 0xED, 0, 0, 0, 2, 0, 0, 0, 2 }), "JKS header mismatch.");
+    Check(data[12..16].SequenceEqual(new byte[] { 0, 0, 0, 2 }), "Entry is not a trusted-certificate entry.");
+    Check(data.AsSpan().IndexOf(cert.RawData) > 0 && data.AsSpan().IndexOf("PRIVATE"u8) < 0, "Truststore content unexpected.");
+    try { JavaTrustStore.Create([("Dup", cert.RawData)], DateTimeOffset.UnixEpoch); throw new Exception("Uppercase alias accepted."); }
+    catch (ArgumentException) { }
+    return Task.CompletedTask;
 }
 
 static async Task ProbeFixture(string directory)

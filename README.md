@@ -1,144 +1,141 @@
-# Token Vault Launcher — Minecraft 26.1.2 / Fabric
+# Token Vault — sandboxed launcher for Minecraft 26.1.2 / Fabric
 
-Windows x64, C#/.NET 8, Java **25**, Fabric (example loader **0.19.5**),
+Windows 10/11 x64, C#/.NET 8 (WinForms GUI), Java **25**, Fabric (example loader **0.19.5**),
 Minecraft protocol **775**, Mojang Authlib **7.0.63**. MIT licensed, open source.
 
-This is a security-focused implementation with automated protocol/API tests.
-It is **not yet a Windows/live-account-validated release**. Read
-[VALIDATION.md](docs/VALIDATION.md) for completed checks and remaining gates.
-Do not treat passing synthetic tests as a promise that malicious mods cannot
-steal items. They can still operate the already authenticated game.
+**Goal:** play with Fabric mods you don't fully trust, without any mod being able to steal your
+Minecraft session token, your Microsoft refresh token, or other sign-in data on your PC.
+One app, one window, your normal Windows account. No second Windows user.
 
-## What changed from the proposed HTTP vault
+> Status: compiles cleanly; the protocol/API regression suite runs in CI. The AppContainer launch
+> has **not** yet been validated on a real game install. See [VALIDATION.md](docs/VALIDATION.md).
+> If the sandbox cannot run something, the game fails to start. It never falls back to an
+> unsandboxed launch.
 
-Allowing the JVM to submit arbitrary `/session/minecraft/join` requests would let
-a mod relay another PC's login hash to the vault. Hiding the bearer token alone
-does not stop that attack. Therefore **every JVM-facing join request returns 403**,
-including requests made with the correct fake token. Configuration cannot change this.
+## How it works
 
-A trusted Minecraft-protocol broker connects to one administrator-configured
-server. It generates the upstream AES secret, computes the join hash from that
-connection, calls Mojang internally, and retains encryption state. The JVM connects
-to the broker's loopback Minecraft listener and never receives the upstream secret,
-the remote encryption handshake, or the real OAuth/Minecraft bearer credentials.
-Fabric login plugin messages, configuration, signed chat and gameplay packets pass
-through; installed mods are unchanged. The broker does not expose a generic signing,
-join-hash, arbitrary target-server, or arbitrary HTTP-forwarding API.
+```
+ ┌──────────────── TokenVault.exe (your Windows user, normal integrity) ────────────────┐
+ │  Microsoft sign-in (system browser, PKCE)  →  Xbox  →  Minecraft access token         │
+ │  Real tokens live ONLY here.  Refresh token on disk: DPAPI, private folder.           │
+ │                                                                                        │
+ │  127.0.0.1:25599  HTTPS API — 3 allowlisted endpoints, fake→real token substitution   │
+ │  127.0.0.1:25598  Connection broker — logs in to YOUR configured server itself        │
+ └──────────────────────────────────▲─────────────────────────────────────────────────────┘
+                                    │ fake token, loopback only
+ ┌──────────────────────────────────┴───── Windows AppContainer sandbox (Low integrity) ──┐
+ │  java.exe → Fabric → Minecraft → every mod                                              │
+ │  can read: libraries/, assets/, versions/<profile>/, Java runtime, mods folder          │
+ │  can write: the instance folder, assets/skins (skin cache), a per-launch temp folder    │
+ │  cannot: read your other files, open TokenVault.exe's memory, write elsewhere           │
+ └─────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-The HTTPS vault provides a small, fixed API surface for player attributes,
-profile/chat certificates and public service keys. See [ALLOWLIST.md](docs/ALLOWLIST.md).
-The JVM receives a unique fake JWT. The fake is invalid at Mojang. Disabling or
-repointing the HTTP vault cannot turn it into a real credential.
+1. **The real credentials never enter the game.** The JVM gets a random fake JWT. Mojang rejects
+   it, so stealing it is useless. Authlib is pointed at the vault's local HTTPS API, which swaps in
+   the real token only for three fixed read-only endpoints (attributes, chat certificate, public
+   keys) and returns 403 for everything else. That includes every `/session/minecraft/join` alias,
+   name/skin changes, and arbitrary URLs. See [ALLOWLIST.md](docs/ALLOWLIST.md).
+2. **Server login is done by the vault, not the game.** The game connects to a local Minecraft
+   listener. The vault opens its own connection to the one configured server, generates the
+   encryption secret, calls Mojang's join endpoint itself, then relays the game traffic. A mod can't
+   ask the vault to authenticate some other connection (for example, relaying a join hash from an
+   attacker's PC), because there is no API for it.
+3. **The game and all mods run in an AppContainer.** This is the same Windows sandbox used for
+   Edge and UWP apps. Creating it needs no admin rights and no extra account. The container has its
+   own SID and runs at Low integrity, so Windows refuses it:
+   * **your files.** It can't open anything not explicitly granted to the container: browser cookies
+     and saved passwords, the official launcher's sign-in files in `.minecraft`, Discord tokens,
+     documents, and Token Vault's own saved sign-in (`%LOCALAPPDATA%\TokenVault\Data`, a private
+     folder with inheritance cut off).
+   * **the vault's memory.** Low-integrity processes can't open normal-integrity processes for
+     reading or injection. The real token in TokenVault.exe's RAM is out of reach.
+   * **writes outside its folders.** Mods can't replace TokenVault.exe, the config, other launchers,
+     startup items, or the shared `libraries`/`versions` files that the official launcher would run
+     unsandboxed later.
+   * **your clipboard** (default). Passwords you copy from a password manager while playing stay out
+     of reach. You can re-enable copy/paste in the window.
+   * **input to other windows.** UIPI blocks Low-integrity processes from sending messages to normal
+     windows.
 
-## Security boundary and honest limits
+   A job object makes everything the game starts die with it, or with Token Vault.
+   Microsoft treats AppContainer escapes as security-boundary bugs and fixes them in Windows Update.
+4. **Sign-in never overlaps a running game.** The browser sign-in happens before launch. Sign-in and
+   sign-out are disabled while the game runs, so no mod is alive during the OAuth flow.
 
-The source, ports, endpoints, client ID, algorithms and protocols are public.
-Security depends on OS identity separation, access controls, random secrets and
-authenticated TLS. Obscurity is not a defense.
+### One-time admin prompt (not an account)
 
-In isolated mode, real credentials exist only in the dedicated vault process,
-not in the launcher process or JVM. OAuth, Xbox and Minecraft access tokens remain
-in memory; a filtered MSAL cache persists refresh tokens encrypted with DPAPI
-`CurrentUser`. Non-secret account/cache metadata is also persisted inside that blob.
-The TLS private key is ephemeral. Only its public certificate is written for the
-JVM's truststore. No API secrets, fake tokens or real tokens are written by our logs.
+Windows blocks AppContainers from connecting to `127.0.0.1` by default. On first Play, Token Vault
+asks once for UAC approval to run Windows' own
+`CheckNetIsolation LoopbackExempt -a -p=<this sandbox's SID>`. That exempts only this sandbox. It
+creates no account, starts no service, and changes no other setting. To undo it:
+`CheckNetIsolation LoopbackExempt -d -p=<SID>` (elevated).
 
-The three requested limits are reproduced verbatim below:
+## What it does NOT protect against (honest limits)
 
-> (a) data-in-use — at login and relaunch the real token is briefly in cleartext RAM, so same-user malware present at that instant wins;
->
-> (b) in-session abuse — a mod can ask the vault to perform allowlisted actions (join server, chat) while the game runs; the vault can rate-limit/log but cannot distinguish a mod's request from the user's;
->
-> (c) admin/SYSTEM malware defeats everything — that's AV's job.
-
-**Implementation-specific corrections to that wording:**
-
-* Access tokens remain usable in vault RAM for the session, not only briefly at
-  login. A same-user development-mode vault is vulnerable throughout its lifetime.
-  Separate-user mode isolates the vault from non-admin code running as the gaming
-  user, including during authentication; it does not protect against malware
-  already running as the vault user. Browser compromise remains an independent risk.
-* Arbitrary join hashes are **not** allowlisted. The broker can authenticate only
-  the connection it owns. A mod can nevertheless connect to that local broker,
-  control its plaintext gameplay side, relay that side to someone elsewhere, or
-  transfer/drop items through the existing game. This project does not sandbox mods
-  or prove human intent. It blocks bearer-token extraction and the arbitrary-hash
-  authentication relay, not all remote control or item theft.
-* Admin/SYSTEM compromise is outside this boundary. Antivirus is not a guarantee
-  that such compromise will be detected or prevented.
-
-Other relevant limits:
-
-* A mod can steal **other credentials already readable by its Windows account**:
-  old launcher tokens, browser sessions, other launchers' caches, etc. This launcher
-  does not revoke or clean them. Use a credential-free Windows gaming account and
-  make game assets/mods accessible to it; keep the primary account and vault account
-  separate. Keeping another usable Minecraft token in the normal launcher defeats
-  the overall goal even though this vault's token remains isolated.
-* Managed strings created by MSAL, JSON and HTTP APIs cannot reliably be zeroed.
-  Owned byte arrays are cleared where possible; “zero all token copies” and “never
-  appears in paging/crash dumps” are not guarantees .NET or this program can make.
-  Do not enable vault process dumps. Protect the OS disk and vault user profile.
-* Profile certificate responses deliberately contain a chat private signing key.
-  Minecraft may cache that key. It is not the account's bearer token, but a malicious
-  mod can misuse it. The refresh-token-only persistence claim covers the vault's
-  account-token storage, not every secret generated by Minecraft or the OS.
-* A truststore containing only the vault certificate can break unrelated HTTPS
-  features/mods, skins or resource-pack downloads. A malicious mod can also create
-  its own TLS context; the truststore is not a network sandbox.
-* No guarantee against denial of service, local input capture, account theft through
-  unrelated credentials, or malicious actions permitted by the game server.
+* **In-game abuse.** A malicious mod still controls the game session you are playing. It can chat,
+  move or drop items, disconnect you, and use the chat-signing key Minecraft needs for signed chat.
+  It cannot take your account with it after you close the game.
+* **Malware outside the sandbox.** Anything running unsandboxed as your Windows user can read what
+  you can, including the vault's memory and its DPAPI-protected refresh token. Admin/SYSTEM malware
+  defeats everything. That is antivirus territory. The old "separate vault account" design defended
+  against same-user malware and this one does not. It defends against what you asked for: mods.
+* **Running the same mods elsewhere.** If you also play these mods through the official launcher,
+  Prism, or similar, they run unsandboxed there and can steal everything. Use Token Vault for modded
+  play.
+* **Phishing.** A mod can show a fake "log in" screen. Token Vault never asks for a password inside
+  the game. Sign-in only ever happens in your browser, before the game starts.
+* **Keystrokes typed into other apps while the game is running.** The sandbox shares your desktop.
+  Windows' UIPI blocks many input-snooping techniques for Low-integrity processes, but this has not
+  been audited here. Close the game before typing passwords elsewhere if you want to be sure.
+* **Loopback exposure.** The exemption lets the sandbox reach any `127.0.0.1` port, not just the
+  vault's. Don't run sensitive unauthenticated local services while playing.
+* **Memory hygiene.** Managed strings from MSAL/JSON/HTTP can't be reliably zeroed. Token Vault never
+  writes real tokens to logs, files (besides the DPAPI blob), command lines, or the game environment.
 
 ## Prerequisites
 
-1. Windows x64, .NET 8 SDK for building, and a **JDK 25** with `java.exe` and
-   `keytool.exe`. A JDK is required for the source-mode Authlib preflight.
-2. A purchased Minecraft Java account with multiplayer permission.
-3. Your **own approved Microsoft/Minecraft public-client application ID**.
-4. Minecraft **26.1.2** and the configured Fabric version already installed in the
-   standard launcher layout: `versions/`, `libraries/`, `assets/`. Run that profile
-   once normally to provision assets, then close it. This project does not implement
-   a Minecraft/Fabric downloader, redistribute their JARs, or accept alternate
-   launcher-specific directory layouts. Supply existing mods through `ModsDirectory`.
-5. One explicit online-mode server host/port. Use the actual host/port; DNS SRV
-   discovery, automatic server transfers, Realms and arbitrary server selection are
-   not implemented. Switch the target through the protected config, then restart.
+1. Windows 10/11 x64 and a purchased Minecraft Java account with multiplayer permission.
+2. Minecraft **26.1.2** plus Fabric for 26.1.2, installed with the official launcher and the Fabric
+   installer. Run the Fabric profile **once** in the official launcher (to download libraries,
+   assets and Java), then close it. Java comes from that install automatically. A JDK 25 is optional
+   and enables an extra Authlib self-check before each launch.
+3. **Your own approved Microsoft/Minecraft application (client) ID.** See below.
+4. One online-mode server address. DNS SRV records, server transfers and Realms are not supported.
 
 ## Register the application
 
-1. In Microsoft Entra **App registrations**, create your own app supporting
-   **personal Microsoft accounts** (or organizations plus personal accounts).
-2. Configure it as a **public desktop/mobile client**, without a client secret.
-   Add the loopback redirect URI `http://127.0.0.1:25597/` to the public-client
-   redirect URI list. If the portal restricts literal loopback IP entry, use the
-   documented application-manifest method. The URI and port must match `OAuthPort`.
-3. The code uses the `consumers` authority and requests `XboxLive.signin`.
-   MSAL itself adds the reserved `openid`, `profile` and `offline_access` scopes.
-   Do **not** manually add reserved scopes to the `AcquireToken*` scope array.
-4. Follow Minecraft's application review/registration process for access to
-   Minecraft Services. Azure registration alone may not permit the final exchange.
-   A 403 at `authentication/login_with_xbox` is a feasibility blocker until your app
-   is approved. Do not copy the official launcher's or another launcher's client ID.
-5. Set `ClientId` in your configuration. Run the standalone `auth` command before
-   trying a game launch. It prints **username and UUID only**, never credentials.
+1. In Microsoft Entra **App registrations**, create an app that supports **personal Microsoft
+   accounts**. Configure it as a **public client / mobile & desktop** app with no secret, and add
+   the redirect URI `http://127.0.0.1:25597/`.
+2. Follow Minecraft's application review process for Minecraft Services access
+   ([help article](https://help.minecraft.net/hc/en-us/articles/16254801392141)). Until it is
+   approved, `login_with_xbox` returns 403. Don't reuse another launcher's client ID.
+3. Paste the client ID into **Advanced → Microsoft app ID** in Token Vault.
 
-OAuth uses MSAL's system-browser authorization-code flow and PKCE. There is no
-embedded browser, password form, device-code fallback, confidential-client secret,
-or password/cookie collection. The browser handles Microsoft credentials.
-The MSAL `ICustomWebUi` adapter opens only that system browser; it does not embed
-a webview. Its Kestrel callback binds literal `127.0.0.1`, validates state and PKCE
-presence, and passes the authorization response back to MSAL for redemption.
-This avoids a mismatch with MSAL's default `localhost` HttpListener prefix.
-XSTS errors for missing Xbox profiles, child/family restrictions, region and age
-verification have fixed, non-secret messages.
+Sign-in uses MSAL's system-browser authorization-code flow with PKCE. There is no embedded browser,
+password form, device code, or client secret.
 
-References: [MSAL system browser](https://learn.microsoft.com/en-us/entra/msal/dotnet/acquiring-tokens/using-web-browsers),
-[OAuth/PKCE and loopback registration](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow),
-[redirect URI restrictions](https://learn.microsoft.com/en-us/entra/identity-platform/reply-url),
-[Minecraft application access](https://help.minecraft.net/hc/en-us/articles/16254801392141),
-[MSAL cache](https://learn.microsoft.com/en-us/entra/msal/dotnet/how-to/token-cache-serialization).
-If the Minecraft help link moves, contact Minecraft support for current app-ID
-authorization instructions; this repository cannot grant approval.
+## Use it
+
+1. Build it (below), or download the `TokenVault-win-x64` artifact from CI.
+2. Run `TokenVault.exe`. Fill in **Server**, pick the **Fabric profile**, and check that the
+   **Minecraft folder** points at your `.minecraft`.
+3. Put your mods in the **Mods folder**. The **Open** button opens it. By default this is
+   `%LOCALAPPDATA%\TokenVault\Instance\mods`. Saves, options and logs go to the **Instance folder**.
+   Token Vault refuses to use `.minecraft` itself (or your user folder, AppData, etc.) as the
+   instance, because the sandbox would then be able to read the official launcher's sign-in files.
+4. Press **Play**. The first time, approve the one-time networking prompt and sign in in your
+   browser. The game opens and joins your server directly.
+5. **Stop game** or closing Token Vault ends the game and the session.
+
+Settings live in `%LOCALAPPDATA%\TokenVault\Data\config.json`. Advanced options (ports,
+`SessionMinutes`, `Allowlist`, `ObserveDeniedEndpoints`) can be edited there; see
+`config.example.json`.
+
+**Smart App Control / WDAC:** if Windows Smart App Control is on, it blocks unsigned executables,
+including a locally built `TokenVault.exe`. Sign the build with a trusted code-signing certificate,
+or decide for yourself whether to change that Windows setting. Token Vault does not touch it.
 
 ## Build and test
 
@@ -148,93 +145,28 @@ dotnet build TokenVault.sln -c Release
 dotnet run --project tests/TokenVault.Tests -c Release
 ```
 
-Or run `scripts/Build.ps1` to build, test and publish self-contained Windows x64
-executables in `artifacts/Vault` and `artifacts/Launcher`. The console test harness
-returns a nonzero exit code on failure; it is run with `dotnet run`, not `dotnet test`.
-The GitHub Actions workflow runs these gates on Windows and Linux. No CI run is
-claimed merely because a workflow file exists.
+`scripts/Build.ps1` does all of that and publishes a self-contained single-file
+`artifacts/TokenVault/TokenVault.exe`. Keep `AuthlibProbe.java` next to it. CI runs the build and
+the tests on Windows and Linux, and uploads the Windows build.
 
-## Isolated installation (recommended)
+## Projects
 
-1. Copy `config.example.json` to `config.local.json` and fill in the client ID,
-   actual server, Java/keytool paths, installed Fabric profile, directories and ports.
-   `MinecraftDirectory` is the standard install root; `GameDirectory` is the instance;
-   `ModsDirectory` is passed through `fabric.modsFolder`. No mod files are rewritten.
-2. Build with `scripts/Build.ps1`.
-3. In elevated PowerShell, run:
+| Project | Role |
+|---|---|
+| `TokenVault.App` | WinForms window: settings, sign-in, Play/Stop, log |
+| `TokenVault.Vault` | OAuth/Xbox/Minecraft auth, DPAPI refresh cache, HTTPS API, connection broker |
+| `TokenVault.Launcher` | Installed-profile resolver, AppContainer sandbox, folder policy, JKS truststore |
+| `TokenVault.Core` | Config, packet I/O, Minecraft crypto, fake JWT |
 
-   ```powershell
-   .\scripts\Install-Isolated.ps1 -Config .\config.local.json -GameUser 'YOURPC\GamingUser'
-   ```
+## Compatibility notes
 
-   Setup creates a new non-admin local vault account, prompts for its Windows
-   password, installs binaries under Program Files, and writes protected settings
-   and private data under ProgramData. It refuses to overwrite an existing install.
-   It does not store that password. Keep the vault account out of Administrators.
-4. Sign into the dedicated vault Windows account once and initialize its system
-   browser. Start `TokenVault.Vault.exe auth <config-path>` there to test login.
-   For maximum separation, run the host from that account's own desktop and switch
-   back to the gaming account while leaving the vault session running.
-5. Alternatively, `scripts/Start-Vault.ps1` starts the host with alternate Windows
-   credentials and a loaded user profile. Browser behavior in this mode must be
-   verified on your Windows installation. It never falls back to a same-user vault.
-6. Run `scripts/Start-Game.ps1` as the gaming user. The launcher verifies the named
-   pipe server's Windows identity, receives only the fake/public descriptor, creates
-   the public-only JKS, probes real Authlib over loopback TLS, and launches Fabric
-   with `--quickPlayMultiplayer 127.0.0.1:25598`.
-
-The host refuses identity/permission mismatches, unexpected Authlib/protocol versions
-are refused by the launcher, and refused API operations stay refused. Closing the
-vault or reaching the configured session deadline closes broker connections.
-Restart/login to renew; the host does not silently keep an unlimited session alive.
-
-## Development fallback
-
-Set `HardeningMode` to `same-user-development` and `DataDirectory` to a writable
-private folder. The explicit combined fallback runs launcher and vault in the same
-process (the game remains a separate fake-token JVM):
-
-```powershell
-dotnet run --project src/TokenVault.Vault -- dev config.local.json
-```
-
-Alternatively use two terminals under the same Windows user:
-
-```powershell
-dotnet run --project src/TokenVault.Vault -- host config.local.json
-dotnet run --project src/TokenVault.Launcher -- launch config.local.json
-```
-
-Both development options keep the real token out of the JVM, but offer **no
-protection from same-user memory-reading malware**. The combined command is refused
-unless the configuration explicitly selects development mode.
-
-## Configuration and compatibility
-
-* Ports are loopback-only. `OAuthPort`, `HttpsPort`, `GamePort` must be distinct.
-* `HardeningMode`, both Windows SIDs and paths are checked in isolated mode.
-* `Allowlist` can narrow the compiled API ceiling; `*` does not grant anything.
-* `ObserveDeniedEndpoints` enables sanitized denied-path detail, **not permission**.
-* `SessionMinutes` caps credential/broker availability; HTTP operations are limited
-  to 60 allowed calls/minute, one active game connection and a three-second reconnect
-  interval. Logs contain no bodies, headers, tokens, or join hashes.
-* Only protocol 775 / 26.1.2 is accepted. Example Fabric loader 0.19.5 can be changed
-  to another installed compatible loader by updating both version/profile fields.
-* The launcher pins Authlib 7.0.63 to Mojang's published SHA-1 content hash. Its
-  executable probe checks all three custom host properties and successfully uses
-  the vault's self-signed certificate before allowing launch. A pinning change or
-  ignored overrides cause refusal, not fallback to real credentials in the JVM.
-* The passphrase/Argon2 layer and outbound-token tripwire are optional proposals,
-  **not implemented**. A passphrase alone would not isolate an unlocked same-user
-  process; passive packet scanning cannot reliably find a token inside TLS.
-
-See [ACCEPTANCE.md](docs/ACCEPTANCE.md) for the Windows/account checks, the stronger
-relay regression test, and why the original “repoint Authlib” test needs a precise
-interpretation with a connection-owning broker.
+* Only protocol 775 / 26.1.2 is accepted, and Authlib is pinned to 7.0.63 by hash.
+* The game's truststore contains the vault's loopback certificate plus your Windows trusted roots,
+  so normal HTTPS from the game and mods (resource packs, skins) keeps working.
+* The sandbox can't write `%APPDATA%` or your user folder. Mods that insist on writing there will
+  log errors. `user.home`, `java.io.tmpdir` and LWJGL/JNA extraction are pointed at sandbox folders.
 
 ## Source history
 
-The archive includes `history.bundle` with stages 1–7 and follow-up test/review
-commits. To reconstruct the repository: `git clone history.bundle token-vault`.
-No Microsoft, Mojang, Fabric, or JDK binaries are included in the source archive.
-External packages retain their own licenses.
+`history.bundle` holds the earlier stages (`git clone history.bundle token-vault`). No Microsoft,
+Mojang, Fabric or JDK binaries are included.

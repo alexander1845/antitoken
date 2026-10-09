@@ -9,8 +9,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
     dotnet run --project tests/TokenVault.Tests -c $Configuration --no-build
     if ($LASTEXITCODE -ne 0) { throw 'Security tests failed' }
-    dotnet publish src/TokenVault.Vault -c $Configuration -r win-x64 --self-contained true -o artifacts/Vault
-    if ($LASTEXITCODE -ne 0) { throw 'Vault publish failed' }
-    dotnet publish src/TokenVault.Launcher -c $Configuration -r win-x64 --self-contained true -o artifacts/Launcher
-    if ($LASTEXITCODE -ne 0) { throw 'Launcher publish failed' }
+    dotnet publish src/TokenVault.App -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/TokenVault
+    if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
+    Write-Host "Done: artifacts/TokenVault/TokenVault.exe (keep AuthlibProbe.java next to it)."
 } finally { Pop-Location }

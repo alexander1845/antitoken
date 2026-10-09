@@ -4,7 +4,25 @@ Target: Windows x64 launcher, Minecraft **26.1.2**, protocol **775**, Fabric exa
 loader **0.19.5**, Java **25**, Authlib **7.0.63**. Tests below were performed in a
 Linux build environment. No Microsoft account credentials were supplied.
 
-## Completed
+## Update — no second Windows account, AppContainer sandbox, GUI
+
+The separate-user vault (installer script, alternate-credential host, named-pipe handoff,
+cross-user ACL checks, console CLIs) was replaced by a single WinForms app. The game JVM
+now runs in a Windows AppContainer with a job object, and the vault runs as the normal user.
+
+| Check | Result | Scope |
+|---|---|---|
+| Full `dotnet build` of all five projects on Windows 11 | PASS | .NET SDK 8.0.425, MSBuild + analyzers, warnings as errors, 0 warnings |
+| Self-contained single-file `dotnet publish` (win-x64) | PASS | Produces `TokenVault.exe` + `AuthlibProbe.java` |
+| Regression test executable on that Windows PC | **NOT RUN** | Windows Smart App Control (on) refuses to load the freshly built unsigned test DLLs. The setting was not changed. CI runs the suite. |
+| New test group: sandbox folder policy, Windows argument quoting, JKS format/digest | Written, not executed locally | Same reason; runs in CI |
+| AppContainer process creation, loopback exemption, ACL/Low-label grants, job limits | **NOT RUN** | Not executed (would modify this PC's sandbox profiles/ACLs, and the unsigned exe is blocked). Needs ACCEPTANCE items 1, 7, 9 |
+| Java 25 + LWJGL/OpenGL/OpenAL inside an AppContainer | **UNKNOWN** | Largest compatibility risk. GPU drivers or Java path canonicalization may misbehave in the sandbox. Failure mode: the game doesn't start, never an unsandboxed launch |
+
+Earlier results below cover code (packet I/O, crypto, HTTPS boundary, broker) that this
+change did not alter.
+
+## Completed (earlier, Linux build environment)
 
 | Check | Result | Scope |
 |---|---|---|
@@ -41,8 +59,8 @@ literal-IPv4 OAuth adapter avoids that callback mismatch.
   framework/package assemblies. This validates C# compilation and runnable tests,
   but is not a substitute for Windows MSBuild/publish or SDK analyzer validation.
 * Windows DPAPI encryption/decryption and refresh-token rotation across logins.
-* Windows account creation, ACL enforcement, alternate-user browser launching,
-  named-pipe identity verification, and denied cross-user process-memory reads.
+* Windows AppContainer launch, folder grants, loopback exemption and job behaviour
+  (see the table above).
 * A real Microsoft → Xbox → XSTS → Minecraft authentication using the user's
   approved application ID and account. Application approval cannot be granted by
   source code; XSTS error messages are implemented but not exercised on real accounts.
