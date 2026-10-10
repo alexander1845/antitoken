@@ -1,212 +1,144 @@
-# Token Vault
+<p align="center">
+  <img src="docs/images/icon.png" width="96" alt="">
+</p>
 
-**Play Minecraft with mods you don't fully trust, without risking your account.**
+<h1 align="center">Token Vault</h1>
 
-Most account thefts in modded Minecraft are simple: a mod reads the session token the game holds in
-memory, or the sign-in files other launchers keep, and sends them to someone else, who then plays as you,
-or worse, takes over your Microsoft account. Token Vault is a Minecraft launcher for Windows built to stop
-that. The game and every mod run in a Windows sandbox and never receive your real sign-in. Token Vault
-keeps it and handles the parts of signing in that need it. A bad mod can still misuse the game while you
-play (see [what it doesn't protect against](#what-it-doesnt-protect-against)), but it can't walk off with
-your account.
+<p align="center">A Minecraft launcher for Windows that keeps your account away from the mods you run.</p>
 
-It uses your normal Windows account, has one Play button, and needs no second user and no official
-launcher.
+<p align="center">
+  <img src="docs/screenshots/06-library.png" width="820" alt="Token Vault's library, with an instance ready to play">
+</p>
 
-> **Status: early release.** Tested end to end on Windows with vanilla and Fabric, including joining
-> online-mode servers. Quilt, Forge and NeoForge are experimental. See [Limits](#what-it-doesnt-protect-against).
+Most stolen Minecraft accounts go the same way. Someone installs a mod that looks fine, the mod reads the sign-in
+token the game keeps in memory (or the files other launchers save), and sends it off. Whoever receives it can play
+as you, and with the right token, take the Microsoft account too.
 
----
+Token Vault runs Minecraft and every mod inside a Windows sandbox and never hands the game your real sign-in. It
+keeps that itself, encrypted, and does the parts of signing in that need it. You install mods the way you're used
+to, press Play, and join servers from the normal multiplayer list.
 
-## Download and first run
+It's an early release. Vanilla and Fabric are tested end to end on Windows, including online-mode servers. Quilt,
+Forge and NeoForge work but are less tested.
 
-1. Download **TokenVault-win-x64.zip** from the [latest release](../../releases/latest) and unzip it
-   anywhere you can write to (not Program Files, so it can update itself). `AuthlibProbe.java` is only
-   used for an optional self-check when you point Token Vault at a JDK.
-2. Run `TokenVault.exe`. Nothing else needs to be installed.
-3. Press **Play**. The first time:
-   * Windows asks once for administrator approval for the sandbox (see [below](#the-one-time-windows-prompt)).
-   * Minecraft, its Java runtime and the mod loader download from Mojang and the loader's servers. Every
-     file is checked against the hash its publisher lists (CurseForge mods in packs excepted: CurseForge
-     doesn't publish hashes).
-   * Your browser opens Microsoft's sign-in page. Your password only ever goes to Microsoft.
-4. Add your servers under **Servers**. They appear in the game's Multiplayer list.
+## Getting started
 
-### "Windows protected your PC"
+1. Download `TokenVault-win-x64.zip` from the [latest release](../../releases/latest) and unzip it somewhere you can
+   write to, like your Downloads or Documents folder. Program Files won't work, because Token Vault updates itself.
+2. Open `TokenVault.exe`. The first time, Windows SmartScreen may say it doesn't recognise the app. Choose
+   **More info**, then **Run anyway**.
+3. Token Vault walks you through the rest: what it protects, a one-time Windows approval for the sandbox, and
+   signing in with Microsoft in your browser.
 
-New programs that aren't signed by a publisher Windows recognises get this blue SmartScreen screen.
-Click **More info → Run anyway**. Code-signed release builds don't show this screen
-(see [Releasing](#releasing)). Until then the warning is expected, and you can check the build by
-comparing it with the CI artifact or by building it yourself.
+After that, pick an instance in your library and press Play. Minecraft, Java and the mod loader download from
+Mojang and the loader's own servers the first time, and every file is checked against the hash its publisher lists.
 
-If **Smart App Control** is turned on, Windows blocks unsigned programs completely and has no "Run
-anyway" option. You'll need a signed release.
+To add mods, drop `.jar` files or a whole modpack onto the window. Modrinth (`.mrpack`), CurseForge, Prism and
+MultiMC exports and ordinary archives all work. Each pack becomes its own instance with the right Minecraft version
+and loader.
 
-## Features
+Add your servers on the **Servers** page. They show up in Minecraft's multiplayer list.
 
-* **One-click Play** for any Minecraft release from 1.8 onwards, vanilla or Fabric. Quilt, Forge and
-  NeoForge are experimental.
-* **Modpack import**: drag a Modrinth `.mrpack`, CurseForge `.zip`, Prism/MultiMC export, any
-  `.zip`/`.7z`/`.rar`/`.tar` or loose `.jar` files onto the window. Each pack becomes its own instance,
-  set up for the Minecraft version and loader the pack (or its mods) names. From a zipped game folder
-  only mods, settings, packs and worlds are copied; other launchers' and clients' sign-in files never are.
-* **Join approval**: before anything signs in to a server as you, Token Vault asks in its own window,
-  which the game can't click. Join only works after the window has been on screen for a moment, so the
-  game can't time it under one of your clicks.
-* **Live connection bar** with a **Disconnect** button while you're signed in to a server.
-* **Activity view**: every join, blocked join and blocked account request, in plain language.
-* **Clipboard protection**: by default the game can't read what you copy, such as passwords from a
-  password manager.
-* **Signed chat switch** (Minecraft 1.19+): turn it off if your servers don't need it (see below).
-* **Automatic updates** from this repository's releases, installed only if they carry Token Vault's
-  release signature.
+<p align="center">
+  <img src="docs/screenshots/02-how-it-works.png" width="410" alt="First-run screen explaining how the account stays safe">
+  <img src="docs/screenshots/10-launching.png" width="410" alt="Launch progress while game files download">
+</p>
 
 ## How it protects you
 
-```
- Token Vault (your Windows user)                    Windows sandbox (low integrity)
- ───────────────────────────────                    ───────────────────────────────
- your real sign-in, encrypted on disk               Java → Minecraft → every mod
- local API: 3 read-only calls  ◄─── fake token ──   can't read your files
- server login broker           ◄─── game traffic ─  can't read Token Vault's memory
-```
+**The game gets a stand-in.** Minecraft starts with a random token that only works against Token Vault itself.
+If a mod steals it, it's useless. When the game needs your profile, skin or chat key, it asks Token Vault, which
+answers a short fixed list of requests and refuses the rest, including name and skin changes.
 
-1. **The game gets a fake token.** It is random and useless to anyone who steals it. The game's
-   account requests go to Token Vault, which forwards only a fixed list of five calls (profile and skin
-   lookups, account settings, and the chat-signing key) with your real token and refuses everything else,
-   including server sign-ins, name and skin changes.
-2. **Token Vault signs in to servers itself.** The game connects to Token Vault, which does the
-   encrypted login with the server and then passes the game traffic through. A mod can't ask Token Vault
-   to sign in to a connection of its own, because the secret that ties a sign-in to a connection is
-   generated and kept by Token Vault, and only the game's own processes can use these connections. The
-   server sees the game's own login packets (one small difference on 1.19–1.19.2); the relay adds a hop
-   on your own PC and decrypts at roughly 100 MB/s on one CPU core.
-3. **The game runs in an AppContainer**, the Windows sandbox used for browser and Store apps. It can't
-   read your documents, browser data or other launchers' sign-in files. It can't read Token Vault's
-   memory, change files outside its game folders, or send input to other windows.
-4. **Your saved sign-in is encrypted** with AES-256-GCM under a key protected by Windows DPAPI and, where
-   the PC has one, its **TPM** chip. With the TPM, a copied file is useless on any other computer and
-   signing out destroys the key. Without a TPM, a copy can be opened by someone who also has your Windows
-   password. Signing out doesn't cancel the sign-in at Microsoft; to do that, remove the app at
-   account.live.com/consent/Manage.
+**Token Vault does the server sign-in.** The game connects to Token Vault, which signs in to the real server and
+passes the game traffic through. The secret that ties a sign-in to one connection is made and kept by Token Vault,
+so a mod can't ask it to sign in somewhere else. Only the game's own process can use these connections, and
+before each join Token Vault asks you in its own window, which the game can't click.
 
-The full design, threat model and cryptographic analysis are in
-[docs/CRYPTOGRAPHY.md](docs/CRYPTOGRAPHY.md).
+**The sandbox.** Minecraft runs in an AppContainer, the same kind of Windows sandbox browsers and Store apps use.
+It can't open your documents, your browser's data or other launchers' saved sign-ins, can't read Token Vault's
+memory, and by default can't read your clipboard.
 
-### The one-time Windows prompt
+**Your saved sign-in** is encrypted with a key held by your PC's TPM chip and Windows. A copy of the file is useless
+on another computer, and signing out destroys the key. On a PC without a TPM, Windows' own encryption (DPAPI) is
+used instead, which someone with your Windows password could open.
 
-Windows needs an administrator's approval once for three small changes that apply only to Token
-Vault's sandbox:
+The details, including the threat model and the cryptography, are in [docs/CRYPTOGRAPHY.md](docs/CRYPTOGRAPHY.md).
 
-* let it connect to Token Vault on this PC (`CheckNetIsolation LoopbackExempt`),
-* let it see folder **names** at the top of your system drive, which Java needs,
-* mark `C:\TokenVault` as a folder the sandbox may write to (a low integrity label; access is still
-  limited by the folder's private permissions).
+## What it can't do
 
-No account is created, no service is installed, and nothing else changes.
+Be clear about these before trusting it with an account you care about.
 
-## What it doesn't protect against
+- **While you're on a server, a bad mod is in control of that connection.** It can chat, trade, give items away or
+  quietly hand the connection to someone else, who plays as you there until you disconnect. Anything done in that
+  time can stick. If something looks wrong, press **Disconnect** at the top of Token Vault. What a mod can't do is
+  sign in as you later.
+- **Signed chat.** On Minecraft 1.19 and newer, the game needs a chat-signing key, and a mod can copy it and sign
+  chat as you for about two days. Turn signed chat off on the Security page if your servers don't require it.
+- **Servers you add** are trusted to be what they say. A malicious one can pass your sign-in on to a different server.
+- **Malware already on your PC** that runs as you (outside the sandbox) can read whatever you can.
+- **Other launchers** don't protect you. Play these mods in Token Vault.
+- **Realms and server transfers** don't work, since both need the game to sign in by itself.
+- **Signing out doesn't cancel the sign-in at Microsoft.** To do that, remove the app at
+  [account.live.com/consent/Manage](https://account.live.com/consent/Manage).
 
-* **What happens while you're on a server.** A malicious mod controls that connection: it can chat,
-  trade, drop items, or quietly hand the connection to someone else who then plays as you there until
-  you disconnect. What they do in that time (giving items away, linking the account to something on that
-  server, getting it banned) can last. If anything looks wrong, press **Disconnect** in Token Vault. A mod
-  can't sign in as you afterwards. Only play valuable accounts with mods you trust.
-* **The chat-signing key.** With signed chat on (the default, because many servers require it), a mod can
-  copy the key and sign chat as you for about two days. It can't sign in with it. Turn signed chat off on
-  the Security page if your servers don't need it.
-* **Servers you add.** A server on your list can pass your sign-in through to a different server. Only add
-  servers you trust.
-* **Malware already on your PC.** Programs running outside the sandbox as you (or as administrator) can
-  read whatever you can. That's antivirus territory.
-* **Playing the same mods elsewhere.** In another launcher those mods run unsandboxed.
-* **Fake login screens.** Token Vault never asks for your password inside the game. Sign-in only happens
-  in your browser, before the game starts.
-* **Local services.** The sandbox can reach anything listening on `127.0.0.1` while you play.
-* **Realms and server transfers** don't work: both need the game to sign in by itself.
-* **The sandbox shares your desktop.** It can't send input to other windows or read the clipboard (by
-  default); whether it can take screenshots of other windows hasn't been tested.
+## Updates and privacy
 
-## Updates
+Token Vault checks this repository's releases when it starts and every few hours. A new version downloads in the
+background and is installed only if it carries Token Vault's release signature. It runs the next time you open the
+app. You can turn this off in Settings.
 
-Token Vault checks this repository's releases when it starts and every six hours. When there is a newer
-one, it downloads it in the background, checks it against Token Vault's release signature and puts it in
-place; the new version runs the next time you open Token Vault (or press **Restart now**). A release
-without a valid signature is never installed. You can turn update checks off in **Settings**.
+Usage statistics are off unless you say yes during setup or in Settings. If you do, Token Vault sends anonymous
+events to PostHog: app and Windows version, which Minecraft version and loader you launch, and whether launches and
+joins work. Never your account, servers, mods or files.
 
-## Usage statistics
-
-Off unless you say yes. Token Vault asks once; you can change it in **Settings**. If you agree, it sends
-anonymous events to PostHog: app and Windows version, the Minecraft version and loader you launch, and
-whether launches and joins worked, with a random id for this install. It never sends your account name,
-servers, mods, files or anything from the game. Builds without a PostHog project key send nothing.
-
-## Where things are
-
-| | |
-|---|---|
-| Game files, instances | `C:\TokenVault` (private to your Windows user) |
-| Settings, saved sign-in, activity log | `%LOCALAPPDATA%\TokenVault\Data` (never shared with the game) |
-| Downloaded updates (temporary) | `%LOCALAPPDATA%\TokenVault\Updates` |
-
-To uninstall: delete those folders and `TokenVault.exe`. To also remove the sandbox's loopback
+Your settings and saved sign-in live in `%LOCALAPPDATA%\TokenVault\Data`. Games, instances and mods live in
+`C:\TokenVault`. To uninstall, delete both folders and `TokenVault.exe`. To also remove the sandbox's network
 exemption, run `CheckNetIsolation LoopbackExempt -d -n=TokenVault.MinecraftSandbox` as administrator.
 
-## Building from source
+## Building
 
-Requires the .NET 8 SDK or newer.
+You need the .NET 8 SDK on Windows.
 
 ```powershell
 dotnet build TokenVault.sln -c Release
-dotnet run --project tests/TokenVault.Tests -c Release   # security regression suite
-./scripts/Build.ps1                                       # tests + single-file exe in artifacts/TokenVault
+dotnet run --project tests/TokenVault.Tests -c Release
+./scripts/Build.ps1        # tests, then a single-file exe in artifacts/TokenVault
 ```
 
-| Project | Role |
+| Project | What's in it |
 |---|---|
-| `TokenVault.App` | WPF window: library, Play, servers, security, settings |
-| `TokenVault.Vault` | Microsoft sign-in, encrypted sign-in storage, local HTTPS API, server login broker |
-| `TokenVault.Launcher` | Game installer, AppContainer sandbox, folder policy, Java truststore |
+| `TokenVault.App` | The window: library, play, servers, security, settings, first-run setup |
+| `TokenVault.Vault` | Microsoft sign-in, encrypted storage, the local API, the server login broker, updates |
+| `TokenVault.Launcher` | Game installer, sandbox, folder permissions |
 | `TokenVault.Packs` | Modpack and archive import |
-| `TokenVault.Core` | Settings, Minecraft packet I/O and crypto, envelope encryption |
+| `TokenVault.Core` | Settings, Minecraft protocol and crypto, envelope encryption |
+
+Screenshots in `docs/screenshots` are taken by CI, which runs the real app on Windows and clicks through it.
 
 ### Releasing
 
-Push a tag such as `v1.1.0` and CI builds (with that version), tests and publishes a GitHub release.
+Push a tag like `v1.2.0`. CI builds that version, runs the tests and publishes a GitHub release.
 
-**Update signing.** The public half of the release key is in `Directory.Build.props`, so every build can
-verify updates. Store the private key as the repository **secret** `UPDATE_SIGNING_KEY`; the release job
-then publishes a signed `TokenVault-update.json` next to the zip. Without the secret, releases still work
-but installed copies only tell players about them. Anyone holding the private key can push code to every
-installed copy: never commit or share it. To replace the key, run `pwsh scripts/New-UpdateSigningKey.ps1`
-and update both the secret and `TokenVaultUpdatePublicKey` (players then download one release by hand).
+Releases are signed for the updater with the key whose public half is in `Directory.Build.props`. Keep the private
+key in the `UPDATE_SIGNING_KEY` repository secret and nowhere else; anyone holding it can push code to every
+installed copy. Without the secret, releases still publish, but installed copies only tell people about them.
 
-**Usage statistics.** The PostHog *project* key (`phc_…`, public by design) is in `Directory.Build.props`
-(`PostHogProjectKey`, with `PostHogHost` set to the US cloud; use `https://eu.i.posthog.com` for an EU
-project). Never use a personal API key (`phx_…`): it is a secret, and the build refuses it. In PostHog,
-turn on "Discard client IP data".
+The PostHog project key in `Directory.Build.props` is a public `phc_` key. Never put a personal `phx_` key there.
 
-**Code signing.** To sign builds (which removes the "unknown publisher" warning), add two repository secrets:
-`SIGNING_CERT_PFX_BASE64` (your code-signing certificate as base64) and `SIGNING_CERT_PASSWORD`.
-Affordable options include an OV certificate from a CA, Microsoft's Azure Trusted Signing, or the free
-SignPath Foundation programme for open-source projects. A new certificate still builds SmartScreen
-reputation over the first downloads.
+To remove SmartScreen's "unknown publisher" warning, add a code-signing certificate as the `SIGNING_CERT_PFX_BASE64`
+and `SIGNING_CERT_PASSWORD` secrets.
 
-### Sign-in application ID
+Microsoft sign-in uses the public application ID that Prism Launcher publishes, so Microsoft's consent page says
+"Prism Launcher". If you distribute your own build, register your own app (personal accounts, public client,
+redirect `http://127.0.0.1:25597/`, Minecraft API approval) and set it in Settings.
 
-Microsoft sign-in needs a registered application ID. By default Token Vault uses the public ID that
-Prism Launcher publishes, so Microsoft's consent page says "Prism Launcher". If you distribute your own
-build, register your own app (personal Microsoft accounts, public client, redirect
-`http://127.0.0.1:25597/`, Minecraft API approval) and set it under **Settings**.
+## More
 
-## Documentation
+- [docs/CRYPTOGRAPHY.md](docs/CRYPTOGRAPHY.md): design, threat model and analysis
+- [docs/ALLOWLIST.md](docs/ALLOWLIST.md): exactly which account requests the game may make
+- [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md): manual checks before a release
+- [docs/VALIDATION.md](docs/VALIDATION.md): what has been tested, and how
 
-* [CRYPTOGRAPHY.md](docs/CRYPTOGRAPHY.md): design, threat model, protocol analysis, verification
-* [ALLOWLIST.md](docs/ALLOWLIST.md): exactly which account calls the game may make
-* [ACCEPTANCE.md](docs/ACCEPTANCE.md): manual release checks
-* [VALIDATION.md](docs/VALIDATION.md): what has been tested, and how
-
-## License
-
-MIT. Token Vault is not affiliated with Mojang or Microsoft. No Mojang, Microsoft, Fabric or JDK
-binaries are included; they are downloaded from their publishers on first run.
+MIT licensed. Not affiliated with Mojang or Microsoft. No Mojang, Microsoft, Fabric or Java files are included;
+they're downloaded from their publishers.
