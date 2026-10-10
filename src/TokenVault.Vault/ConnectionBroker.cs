@@ -365,11 +365,14 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
         return marker.Length <= 32 && marker.All(ch => ch == '\0' || char.IsAsciiLetterOrDigit(ch)) ? marker : "";
     }
 
+    // Server list: the server's own status reply, then the game's ping goes to the server and its pong comes back, so the
+    // multiplayer screen shows the real ping. If the server can't be reached, a local reply keeps the list usable.
     private async Task StatusAsync(Stream stream, string marker, CancellationToken ct)
     {
         byte[] request = await PacketIO.ReadAsync(stream, -1, ct);
         if (request.Length != 1 || request[0] != 0) throw new InvalidDataException("Invalid status request.");
-        byte[] response = await UpstreamStatusAsync(marker, ct) ?? PacketIO.Packet(0, s => PacketIO.WriteString(s, JsonSerializer.Serialize(new
+        using var upstream = await UpstreamStatusAsync(marker, ct);
+        byte[] response = upstream?.Response ?? PacketIO.Packet(0, s => PacketIO.WriteString(s, JsonSerializer.Serialize(new
         {
             version = new { name = "Token Vault", protocol },
             players = new { max = 0, online = 0 },
@@ -377,18 +380,39 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
         })));
         await PacketIO.WriteAsync(stream, response, -1, ct);
         byte[] ping = await PacketIO.ReadAsync(stream, -1, ct);
-        if (ping.Length == 9 && ping[0] == 1) await PacketIO.WriteAsync(stream, ping, -1, ct);
+        if (ping.Length != 9 || ping[0] != 1) return;
+        if (upstream is not null)
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            deadline.CancelAfter(TimeSpan.FromSeconds(5));
+            try
+            {
+                await PacketIO.WriteAsync(upstream.Stream, ping, -1, deadline.Token);
+                byte[] pong = await PacketIO.ReadAsync(upstream.Stream, -1, deadline.Token);
+                if (pong.Length == 9 && pong[0] == 1) { await PacketIO.WriteAsync(stream, pong, -1, ct); return; }
+            }
+            catch (Exception ex) when (ex is IOException or SocketException or InvalidDataException || (ex is OperationCanceledException && !ct.IsCancellationRequested)) { }
+        }
+        await PacketIO.WriteAsync(stream, ping, -1, ct);
     }
 
-    // Server-list ping (MOTD, player count). Unauthenticated and unencrypted; only the response packet is relayed.
-    private async Task<byte[]?> UpstreamStatusAsync(string marker, CancellationToken lifetime)
+    private sealed class StatusConnection(TcpClient client, byte[] response) : IDisposable
+    {
+        public Stream Stream { get; } = client.GetStream();
+        public byte[] Response { get; } = response;
+        public void Dispose() => client.Dispose();
+    }
+
+    // Server-list ping (MOTD, player count). Unauthenticated and unencrypted; only status packets are relayed. The
+    // connection stays open for the ping that follows.
+    private async Task<StatusConnection?> UpstreamStatusAsync(string marker, CancellationToken lifetime)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
         deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        var remote = new TcpClient { NoDelay = true };
         try
         {
             var endpoint = await ServerResolver.ResolveAsync(target, deadline.Token);
-            using var remote = new TcpClient { NoDelay = true };
             await remote.ConnectAsync(endpoint.Host, endpoint.Port, deadline.Token);
             var upstream = remote.GetStream();
             var (host, port) = protocol >= 755 ? (target.Host, target.Port) : (endpoint.Host, endpoint.Port);
@@ -396,13 +420,14 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
             await PacketIO.WriteAsync(upstream, [0], -1, deadline.Token);
             byte[] response = await PacketIO.ReadAsync(upstream, -1, deadline.Token);
             int offset = 0;
-            if (PacketIO.ReadVarInt(response, ref offset) != 0) return null;
+            if (PacketIO.ReadVarInt(response, ref offset) != 0) { remote.Dispose(); return null; }
             _ = PacketIO.ReadString(response, ref offset);
             PacketIO.RequireEnd(response, offset);
-            return response;
+            return new StatusConnection(remote, response);
         }
         catch (Exception ex) when (ex is IOException or SocketException or InvalidDataException or OperationCanceledException)
         {
+            remote.Dispose();
             if (lifetime.IsCancellationRequested) throw;
             return null;
         }

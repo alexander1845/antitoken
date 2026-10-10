@@ -198,12 +198,23 @@ public partial class MainWindow : Window
             var game = sandbox;
             var started = DateTime.UtcNow;
             telemetry.Track("game_launched", new Dictionary<string, string> { ["minecraft_version"] = instance.MinecraftVersion, ["loader"] = instance.Loader });
-            int code = await Task.Run(() => JavaLauncher.LaunchAsync(launch, session.Descriptor, game, line =>
+            // The sandbox may not confine the mouse itself, so Token Vault holds it in the game window while it's captured.
+            CursorLock? cursorLock = null;
+            int code;
+            try
             {
-                Log(line);
-                if (line.StartsWith("Starting Minecraft", StringComparison.Ordinal))
-                    Dispatcher.BeginInvoke(() => LaunchPlaying(instance.Name, account.Profile.Name));
-            }, cts.Token, process => origin.Allow((client, server) => LoopbackPeers.OwnerOf(client, server) is int pid && process.Contains(pid))));
+                code = await Task.Run(() => JavaLauncher.LaunchAsync(launch, session.Descriptor, game, line =>
+                {
+                    Log(line);
+                    if (line.StartsWith("Starting Minecraft", StringComparison.Ordinal))
+                        Dispatcher.BeginInvoke(() => LaunchPlaying(instance.Name, account.Profile.Name));
+                }, cts.Token, process =>
+                {
+                    origin.Allow((client, server) => LoopbackPeers.OwnerOf(client, server) is int pid && process.Contains(pid));
+                    cursorLock = CursorLock.Start(process);
+                }));
+            }
+            finally { cursorLock?.Dispose(); }
             telemetry.Track("game_exited", new Dictionary<string, string>
             {
                 ["result"] = code == 0 ? "ok" : "error", ["minutes"] = ((int)(DateTime.UtcNow - started).TotalMinutes).ToString(System.Globalization.CultureInfo.InvariantCulture)

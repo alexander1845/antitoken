@@ -51,15 +51,15 @@
       "tokenvault.launcher": {
         "type": "Project",
         "dependencies": {
-          "TokenVault.Core": "[1.1.0, )"
+          "TokenVault.Core": "[1.1.1, )"
         }
       },
       "tokenvault.packs": {
         "type": "Project",
         "dependencies": {
           "SharpCompress": "[1.0.0, )",
-          "TokenVault.Core": "[1.1.0, )",
-          "TokenVault.Launcher": "[1.1.0, )"
+          "TokenVault.Core": "[1.1.1, )",
+          "TokenVault.Launcher": "[1.1.1, )"
         }
       },
       "tokenvault.vault": {
@@ -67,7 +67,7 @@
         "dependencies": {
           "Microsoft.Identity.Client": "[4.90.1, )",
           "System.Security.Cryptography.ProtectedData": "[8.0.0, )",
-          "TokenVault.Core": "[1.1.0, )"
+          "TokenVault.Core": "[1.1.1, )"
         }
       }
     },

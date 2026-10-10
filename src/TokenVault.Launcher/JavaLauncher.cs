@@ -16,6 +16,7 @@ public static class JavaLauncher
         // Java is never executed outside the sandbox: the runtime Token Vault installed matches the version's JSON.
         string java = JavaLocator.Find(c) ?? throw new UserVisibleException("Java isn't installed yet. Press Play again to install it.");
         log("Java: " + java);
+        PreferHighPerformanceGpu(java, log);
 
         string game = Configuration.Expand(c.GameDirectory), mods = Configuration.Expand(c.ModsDirectory), javaHome = JavaLocator.Home(java);
         bool modsInsideGame = SandboxPolicy.Same(mods, game) || SandboxPolicy.IsWithin(mods, game);
@@ -102,6 +103,7 @@ public static class JavaLauncher
             var arguments = new List<string>(installed.JvmArguments);
             arguments.AddRange(properties);
             arguments.Add("-Xmx" + c.MemoryMb + "M");
+            arguments.AddRange(PerformanceArguments);
             arguments.Add(installed.MainClass);
             arguments.AddRange(installed.GameArguments);
             // No command-line logging, @argfiles, token files, or real-token environment inheritance.
@@ -142,6 +144,25 @@ public static class JavaLauncher
         _ => $"exit code {code}"
     };
 
+    // On PCs with two graphics chips (most gaming laptops) Windows picks one per program path, and a path it hasn't seen
+    // can land on the power-saving chip. Token Vault's Java gets the high-performance one, the same as choosing it under
+    // Settings > System > Display > Graphics, unless the player already chose something for it there.
+    private static void PreferHighPerformanceGpu(string java, Action<string> log)
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\DirectX\UserGpuPreferences");
+            if (key.GetValue(java) is not null) return;
+            key.SetValue(java, "GpuPreference=2;");
+            log("Set Minecraft's Java to use the high-performance graphics chip.");
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException) { }
+    }
+    // The garbage-collector settings the official launcher gives every profile. Without them Java's defaults collect in
+    // longer pauses, which show up as stutter. Nothing else about how the game runs differs from the official launcher.
+    public static readonly string[] PerformanceArguments =
+        ["-XX:+UnlockExperimentalVMOptions", "-XX:+UseG1GC", "-XX:G1NewSizePercent=20", "-XX:G1ReservePercent=20",
+         "-XX:MaxGCPauseMillis=50", "-XX:G1HeapRegionSize=32M"];
     public static List<string> Properties(SessionDescriptor s, string trust, string temp, string game) =>
     ["-Dminecraft.api.env=custom", $"-Dminecraft.api.session.host=https://127.0.0.1:{s.HttpsPort}/session",
         // Older Authlib builds (1.16-1.18) also read auth/account hosts; everything there is refused by the vault.

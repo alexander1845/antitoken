@@ -20,7 +20,7 @@
       "tokenvault.launcher": {
         "type": "Project",
         "dependencies": {
-          "TokenVault.Core": "[1.1.0, )"
+          "TokenVault.Core": "[1.1.1, )"
         }
       }
     },

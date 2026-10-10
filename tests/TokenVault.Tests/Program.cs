@@ -11,6 +11,8 @@ using TokenVault.Packs;
 using TokenVault.Vault;
 using Microsoft.Identity.Client;
 
+const int RoundTrips = 500; // small-packet round trips timed through the broker relay
+
 if (args.Length == 2 && args[0] == "--probe-fixture")
 {
     await ProbeFixture(args[1]);
@@ -263,7 +265,7 @@ static async Task BrokerTests()
     byte[] pub = rsa.ExportSubjectPublicKeyInfo(); byte[] verify = RandomNumberGenerator.GetBytes(4);
     Task server = Task.Run(async () =>
     {
-        using var remote = await listener.AcceptTcpClientAsync(ct); Stream raw = remote.GetStream();
+        using var remote = await listener.AcceptTcpClientAsync(ct); remote.NoDelay = true; Stream raw = remote.GetStream();
         var handshake = await PacketIO.ReadAsync(raw, -1, ct); int o = 0;
         Check(PacketIO.ReadVarInt(handshake, ref o) == 0 && PacketIO.ReadVarInt(handshake, ref o) == 775, "Wrong upstream protocol.");
         Check(PacketIO.ReadString(handshake, ref o) == "127.0.0.1", "Untrusted game destination escaped.");
@@ -285,10 +287,12 @@ static async Task BrokerTests()
         byte[] application = new byte[100_000]; await encrypted.ReadExactlyAsync(application, ct);
         Check(application.All(b => b == 42), "Game relay corrupted.");
         await encrypted.WriteAsync(application, ct);
+        byte[] small = new byte[24];
+        for (int i = 0; i < RoundTrips; i++) { await encrypted.ReadExactlyAsync(small, ct); await encrypted.WriteAsync(small, ct); }
     }, ct);
     var local = new TcpListener(IPAddress.Loopback, 0); local.Start();
-    using var game = new TcpClient(); await game.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)local.LocalEndpoint).Port, ct);
-    using var brokerSocket = await local.AcceptTcpClientAsync(ct);
+    using var game = new TcpClient { NoDelay = true }; await game.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)local.LocalEndpoint).Port, ct);
+    using var brokerSocket = await local.AcceptTcpClientAsync(ct); brokerSocket.NoDelay = true; // as the real broker does
     var broker = new ConnectionBroker(new ServerEntry("test", "127.0.0.1", remotePort), Profile(), auth, _ => { });
     Task relay = broker.HandleAsync(brokerSocket.GetStream(), ct);
     try
@@ -305,9 +309,87 @@ static async Task BrokerTests()
         byte[] payload = Enumerable.Repeat((byte)42, 100_000).ToArray(); await stream.WriteAsync(payload, ct);
         byte[] echo = new byte[payload.Length]; await stream.ReadExactlyAsync(echo, ct);
         Check(echo.SequenceEqual(payload), "Encrypted bidirectional stream failed.");
+        // Ping: small packets through the whole relay (plain to the game, encrypted to the server) against the same
+        // round trips over a direct connection. Only the difference is Token Vault's doing.
+        var relayed = await RoundTripMicrosecondsAsync(stream, ct);
+        var direct = await DirectRoundTripMicrosecondsAsync(ct);
+        double added = relayed[RoundTrips / 2] - direct[RoundTrips / 2], addedP99 = relayed[RoundTrips * 99 / 100] - direct[RoundTrips * 99 / 100];
+        Console.WriteLine($"     (relay adds {Math.Max(0, added):0} µs median, {Math.Max(0, addedP99):0} µs at the 99th percentile, per round trip)");
+        Check(added < 2000, $"The relay adds {added:0} µs to a round trip; it should be well under a millisecond.");
         game.Close(); await server; await relay;
+        await ServerListPingTests(ct);
     }
     finally { listener.Stop(); local.Stop(); deadline.Cancel(); }
+}
+
+// The multiplayer screen's ping must be the server's: the pong comes from upstream, not from Token Vault.
+static async Task ServerListPingTests(CancellationToken ct)
+{
+    var upstream = new TcpListener(IPAddress.Loopback, 0); upstream.Start();
+    var local = new TcpListener(IPAddress.Loopback, 0); local.Start();
+    try
+    {
+        Task server = Task.Run(async () =>
+        {
+            using var client = await upstream.AcceptTcpClientAsync(ct); var s = client.GetStream();
+            await PacketIO.ReadAsync(s, -1, ct); await PacketIO.ReadAsync(s, -1, ct); // handshake, status request
+            await PacketIO.WriteAsync(s, PacketIO.Packet(0, w => PacketIO.WriteString(w, "{\"description\":{\"text\":\"real server\"}}")), -1, ct);
+            byte[] ping = await PacketIO.ReadAsync(s, -1, ct);
+            ping[8] ^= 0xFF; // a pong only the server could have sent
+            await PacketIO.WriteAsync(s, ping, -1, ct);
+        }, ct);
+        using var game = new TcpClient { NoDelay = true }; await game.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)local.LocalEndpoint).Port, ct);
+        using var brokerSocket = await local.AcceptTcpClientAsync(ct);
+        var broker = new ConnectionBroker(new ServerEntry("test", "127.0.0.1", ((IPEndPoint)upstream.LocalEndpoint).Port), Profile(),
+            new MockAuthenticator(new TaskCompletionSource<string>()), _ => { });
+        Task handling = broker.HandleAsync(brokerSocket.GetStream(), ct);
+        Stream stream = game.GetStream();
+        await PacketIO.WriteAsync(stream, PacketIO.Handshake("localhost", 1, 1), -1, ct);
+        await PacketIO.WriteAsync(stream, [0], -1, ct);
+        Check(Encoding.UTF8.GetString(await PacketIO.ReadAsync(stream, -1, ct)).Contains("real server"), "Server list didn't show the server's own status.");
+        byte[] ping = [1, 1, 2, 3, 4, 5, 6, 7, 8];
+        await PacketIO.WriteAsync(stream, ping, -1, ct);
+        byte[] pong = await PacketIO.ReadAsync(stream, -1, ct);
+        Check(pong.Length == 9 && pong[8] == (ping[8] ^ 0xFF), "Server-list ping was answered locally instead of by the server.");
+        await server; await handling;
+    }
+    finally { upstream.Stop(); local.Stop(); }
+}
+
+static async Task<double[]> RoundTripMicrosecondsAsync(Stream stream, CancellationToken ct)
+{
+    byte[] small = Enumerable.Range(0, 24).Select(i => (byte)i).ToArray(), back = new byte[small.Length];
+    var times = new double[RoundTrips];
+    for (int i = 0; i < RoundTrips; i++)
+    {
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        await stream.WriteAsync(small, ct);
+        await stream.ReadExactlyAsync(back, ct);
+        times[i] = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMicroseconds;
+        Check(back.SequenceEqual(small), "Relay changed a small packet.");
+    }
+    Array.Sort(times);
+    return times;
+}
+
+static async Task<double[]> DirectRoundTripMicrosecondsAsync(CancellationToken ct)
+{
+    var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+    try
+    {
+        using var client = new TcpClient { NoDelay = true };
+        await client.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, ct);
+        using var server = await listener.AcceptTcpClientAsync(ct); server.NoDelay = true;
+        Task echo = Task.Run(async () =>
+        {
+            byte[] small = new byte[24]; var s = server.GetStream();
+            for (int i = 0; i < RoundTrips; i++) { await s.ReadExactlyAsync(small, ct); await s.WriteAsync(small, ct); }
+        }, ct);
+        var times = await RoundTripMicrosecondsAsync(client.GetStream(), ct);
+        await echo;
+        return times;
+    }
+    finally { listener.Stop(); }
 }
 
 static async Task OfflineTests()

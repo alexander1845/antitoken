@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -100,16 +102,24 @@ public sealed class CipherStream(Stream inner, byte[] secret) : Stream
         if (n > 0) decryptor.TransformBlock(buffer, offset, n, buffer, offset);
         return n;
     }
+    // Runs for every packet while playing: decrypts in the caller's buffer when it's an array (the relay's always is),
+    // so there's no allocation or extra copy per read.
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
-        byte[] temp = new byte[buffer.Length];
+        if (MemoryMarshal.TryGetArray<byte>(buffer, out var segment))
+        {
+            int read = await inner.ReadAsync(buffer, cancellationToken);
+            if (read > 0) decryptor.TransformBlock(segment.Array!, segment.Offset, read, segment.Array!, segment.Offset);
+            return read;
+        }
+        byte[] temp = ArrayPool<byte>.Shared.Rent(buffer.Length);
         try
         {
-            int n = await inner.ReadAsync(temp, cancellationToken);
+            int n = await inner.ReadAsync(temp.AsMemory(0, buffer.Length), cancellationToken);
             if (n > 0) decryptor.TransformBlock(temp, 0, n, temp, 0);
             temp.AsMemory(0, n).CopyTo(buffer); return n;
         }
-        finally { CryptographicOperations.ZeroMemory(temp); }
+        finally { CryptographicOperations.ZeroMemory(temp); ArrayPool<byte>.Shared.Return(temp); }
     }
     public override void Write(byte[] buffer, int offset, int count)
     {
@@ -119,9 +129,15 @@ public sealed class CipherStream(Stream inner, byte[] secret) : Stream
     }
     public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
-        byte[] temp = buffer.ToArray();
-        try { encryptor.TransformBlock(temp, 0, temp.Length, temp, 0); await inner.WriteAsync(temp, cancellationToken); }
-        finally { CryptographicOperations.ZeroMemory(temp); }
+        int count = buffer.Length;
+        byte[] temp = ArrayPool<byte>.Shared.Rent(count);
+        try
+        {
+            buffer.Span.CopyTo(temp);
+            encryptor.TransformBlock(temp, 0, count, temp, 0);
+            await inner.WriteAsync(temp.AsMemory(0, count), cancellationToken);
+        }
+        finally { CryptographicOperations.ZeroMemory(temp.AsSpan(0, count)); ArrayPool<byte>.Shared.Return(temp); }
     }
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
     public override void SetLength(long value) => throw new NotSupportedException();

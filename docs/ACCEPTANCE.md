@@ -121,3 +121,7 @@ gameplay stream. Testing must not label this project an all-purpose mod sandbox.
 10. **Old game folder.** Make `C:\TokenVault` inherit its permissions (`icacls C:\TokenVault /reset`) and start
     Token Vault: the log says it was made private, no error shows, and `icacls` lists only you, SYSTEM,
     Administrators and the sandbox. Put a junction inside it and repeat: Token Vault refuses the folder instead.
+11. **Mouse capture.** In a world, swing the camera hard toward every screen edge and click: the cursor never leaves
+    the game window and the view keeps turning. Open the inventory or press Esc: the cursor is free again. Alt-tab works.
+12. **Ping.** The multiplayer list's ping for a server matches the official launcher's within a couple of ms, and so
+    does the in-game ping in the player list.
