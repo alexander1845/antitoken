@@ -7,8 +7,9 @@ using TokenVault.Core;
 
 namespace TokenVault.Vault;
 
+// sessionEnd: the fake token's expiry; nothing is served after it.
 public sealed class HttpsVault(Configuration config, MinecraftIdentity identity, string fakeToken,
-    X509Certificate2 certificate, HttpClient http, Action<string> audit)
+    X509Certificate2 certificate, HttpClient http, Action<string> audit, DateTimeOffset? sessionEnd = null)
 {
     private readonly Queue<long> calls = new();
     private readonly byte[] fakeDigest = SHA256.HashData(Encoding.UTF8.GetBytes(fakeToken));
@@ -47,15 +48,11 @@ public sealed class HttpsVault(Configuration config, MinecraftIdentity identity,
         context.Response.Headers["X-Content-Type-Options"] = "nosniff";
         if (!IPAddress.IsLoopback(context.Connection.RemoteIpAddress ?? IPAddress.None) ||
             context.Request.Host.Host != "127.0.0.1" || !VaultPolicy.IsAllowedQuery(context.Request.Method, path, context.Request.QueryString.Value ?? "") ||
-            DateTimeOffset.UtcNow >= identity.ExpiresAt.AddSeconds(-30) ||
-            !VaultPolicy.IsAllowed(config.Allowlist, context.Request.Method, path))
+            DateTimeOffset.UtcNow >= identity.ExpiresAt.AddSeconds(-30) || DateTimeOffset.UtcNow >= (sessionEnd ?? DateTimeOffset.MaxValue) ||
+            !VaultPolicy.IsAllowed(VaultPolicy.Effective(config), context.Request.Method, path))
         { context.Response.StatusCode = 403; return; }
 
-        string supplied = context.Request.Headers.Authorization.ToString();
-        bool isPublic = VaultPolicy.IsPublic(context.Request.Method, path);
-        if (!isPublic && (!supplied.StartsWith("Bearer ", StringComparison.Ordinal) ||
-            !CryptographicOperations.FixedTimeEquals(fakeDigest, SHA256.HashData(Encoding.UTF8.GetBytes(supplied[7..])))))
-        { context.Response.StatusCode = 403; return; }
+        // Counted before the credential check, so wrong guesses are rate-limited too.
         lock (calls)
         {
             long now = Environment.TickCount64;
@@ -63,6 +60,11 @@ public sealed class HttpsVault(Configuration config, MinecraftIdentity identity,
             if (calls.Count >= 120) { context.Response.StatusCode = 429; return; }
             calls.Enqueue(now);
         }
+        string supplied = context.Request.Headers.Authorization.ToString();
+        bool isPublic = VaultPolicy.IsPublic(context.Request.Method, path);
+        if (!isPublic && (!supplied.StartsWith("Bearer ", StringComparison.Ordinal) ||
+            !CryptographicOperations.FixedTimeEquals(fakeDigest, SHA256.HashData(Encoding.UTF8.GetBytes(supplied[7..])))))
+        { context.Response.StatusCode = 403; return; }
         try
         {
             string upstreamUrl = VaultPolicy.Upstream(path, context.Request.QueryString.Value ?? "");

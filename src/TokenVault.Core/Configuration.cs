@@ -23,6 +23,15 @@ public sealed class Configuration
     public bool AllowClipboard { get; set; }
     // Ask in Token Vault's window before every server join, so a mod can't quietly join as you.
     public bool ConfirmJoins { get; set; } = true;
+    // Serve the 1.19+ chat-signing key to the game. Many servers (vanilla's default "enforce-secure-profile") require it,
+    // but any mod can copy the key and sign chat as you until it expires (about two days). Off: unsigned chat only.
+    public bool AllowChatSigning { get; set; } = true;
+    // Look for a newer Token Vault on GitHub and install it after its signature checks out.
+    public bool CheckForUpdates { get; set; } = true;
+    // Anonymous usage statistics. null: the player hasn't been asked yet (treated as off).
+    public bool? ShareUsageStatistics { get; set; }
+    // Random, per-install identifier for usage statistics. Never derived from the account or the PC.
+    public string InstallId { get; set; } = "";
     public bool RememberSignIn { get; set; } = true;
     public bool ObserveDeniedEndpoints { get; set; }
     // Can only narrow Token Vault's built-in list of read-only requests (see VaultPolicy); never widen it.
@@ -79,6 +88,8 @@ public sealed class Configuration
         foreach (var server in Servers) server.Validate();
         if (SessionMinutes is < 1 or > 1440 || MemoryMb is < 512 or > 65536)
             throw new InvalidDataException("Invalid session duration or memory size.");
+        if (InstallId.Length > 0 && !Guid.TryParseExact(InstallId, "N", out _))
+            throw new InvalidDataException("Invalid install identifier.");
         if (ClientId.Length > 0 && !Guid.TryParse(ClientId, out _))
             throw new InvalidDataException("The Microsoft application ID must be a GUID, or empty to use the built-in one.");
     }

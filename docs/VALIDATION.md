@@ -4,6 +4,27 @@ Target: Windows x64 launcher, Minecraft **26.1.2**, protocol **775**, Fabric exa
 loader **0.19.5**, Java **25**, Authlib **7.0.63**. Tests below were performed in a
 Linux build environment. No Microsoft account credentials were supplied.
 
+## Update — 1.1: fixes from the security review, updater, usage statistics
+
+Changes respond to an external review (session handover, chat-key misuse, join-prompt clickjacking, relay by a
+listed server, unauthenticated brokers, credential files in pack imports, documentation errors). Tested in a
+Linux build environment (.NET SDK 8.0.131); the WPF app itself is compiled only by Windows CI.
+
+| Check | Result | Scope |
+|---|---|---|
+| Regression suite **17/17**, six consecutive runs | PASS | Linux; CI repeats on Windows and Linux |
+| Brokers refuse connections not recognised as the game; no sign-in after the deadline; shared reconnect limit; Disconnect ends the live relay | PASS | `BrokerHardeningTests`, local mocks. The Windows check itself (TCP owner PID → game job) is **NOT RUN** |
+| Wrong-token guesses rate-limited; chat-signing key refused when signed chat is off | PASS | `ApiHardeningTests` |
+| Batched CFB8 equals a byte-by-byte reference over random data and chunking; 80–130 MiB/s (was 4.5 MiB/s) | PASS | `Cfb8BatchTests`, Linux |
+| Zipped `.minecraft` with Essential, TLauncher, Meteor, Wurst-style and launcher account files: only mods/config/options copied; version and loader detected from mods | PASS | `PackImportTests` |
+| Signed update manifest: accepted; altered package, foreign key, older version, keyless build, non-GitHub redirect refused; in-place swap and clean-up | PASS | `UpdaterTests` with a mock GitHub |
+| openssl-signed manifest (as produced by the release job) verifies with the app's verifier | PASS | Manual cross-check, throwaway key |
+| Statistics payload limited to the fixed vocabulary; `phx_` keys and plain HTTP refused | PASS | `TelemetryTests`; nothing sent to PostHog |
+| WPF window changes (connection bar, update bar, Join arming delay, new switches) | **NOT RUN** | Needs Windows |
+| Real update from a GitHub release, restart and clean-up of the old exe | **NOT RUN** | Needs a signed release |
+| Forge/NeoForge folder made read-only after install; launch still works | **NOT RUN** | Needs Windows; Forge/NeoForge remain experimental |
+| Transient TPM failure keeps the saved sign-in | **NOT RUN** | Needs a TPM |
+
 ## Update — release 1.0: encrypted sign-in storage, joins, sandbox fixes
 
 | Check | Result | Scope |

@@ -27,6 +27,10 @@ public partial class MainWindow : Window
     private int modsVersion;
     private int unseenBlocks;
     private readonly List<ActivityItem> activity = [];
+    private VaultSession? liveSession;
+    private Telemetry telemetry = new(new System.Net.Http.HttpClient(), () => false, "", "", "");
+    private UpdateInfo? update;
+    private bool updateInstalled;
 
     public MainWindow()
     {
@@ -40,7 +44,9 @@ public partial class MainWindow : Window
         ServerAddress.TextChanged += (_, _) => ServerHint.Visibility = ServerAddress.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         LimitsList.ItemsSource = new[]
         {
-            new Limit("Actions inside the game", "A bad mod can still chat, move or drop items, or disconnect you while you play. It can't take your account with it."),
+            new Limit("Actions inside the game", "While you're on a server, a bad mod controls that connection: it can chat, trade, give items away or hand the connection to someone else until you disconnect. Use Disconnect at the top of Token Vault if anything looks wrong. It can't sign in as you afterwards."),
+            new Limit("Signed chat", "With signed chat on, a mod can copy the chat-signing key and sign chat as you for about two days. Turn it off above if your servers don't need it."),
+            new Limit("Servers you add", "A server on your list can quietly pass your sign-in on to a different server. Only add servers you trust."),
             new Limit("Malware outside the sandbox", "Programs already running on your PC as you (or as administrator) can read anything you can."),
             new Limit("Other launchers", "Playing these mods in another launcher removes this protection. Use Token Vault for modded play."),
             new Limit("Fake login screens", "A mod can draw a fake login screen. Token Vault never asks for your password inside the game.")
@@ -58,6 +64,9 @@ public partial class MainWindow : Window
             catch (Exception ex) when (ex is InvalidDataException or System.Text.Json.JsonException) { Log("Settings were unreadable; using defaults."); }
             instances = InstanceStore.Load();
             InstanceStore.Save(instances);
+            if (settings.InstallId.Length == 0) { settings.InstallId = Guid.NewGuid().ToString("N"); TrySaveSettings(); }
+            telemetry = Telemetry.Create(() => settings.ShareUsageStatistics == true, settings.InstallId);
+            if (Environment.ProcessPath is { } exe) try { Updater.CleanUp(exe); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             try { JavaLauncher.CleanStaleRuns(); } catch (IOException) { }
             try { sandbox = GameSandbox.Open(); } catch (Exception ex) { Log("Sandbox: " + Describe(ex)); }
             GameFolders.Ensure(sandbox?.Sid, Log); // also moves instances from older builds
@@ -69,6 +78,33 @@ public partial class MainWindow : Window
         RefreshAccount();
         SetBusy(false);
         Status("Ready");
+        _ = AfterStartAsync();
+    }
+
+    private async Task AfterStartAsync()
+    {
+        if (settings.ShareUsageStatistics is null && telemetry.Configured)
+        {
+            bool share = await AskAsync("Help improve Token Vault?",
+                "Token Vault can send anonymous usage statistics: which features are used, which Minecraft versions and loaders, and whether launches and joins work.\n\n" +
+                "It never sends your account, servers, mods, files or anything from the game. You can change this in Settings.", "Share statistics");
+            settings.ShareUsageStatistics = share;
+            TrySaveSettings();
+            if (share) telemetry.Track("consent_given");
+        }
+        telemetry.Track("app_started", new Dictionary<string, string>
+        {
+            ["protection"] = File.Exists(AppPaths.RefreshCache) ? (RefreshCache.Protection(AppPaths.RefreshCache).StartsWith("TPM") ? "tpm" : "dpapi") : "none",
+            ["confirm_joins"] = settings.ConfirmJoins ? "on" : "off", ["chat_signing"] = settings.AllowChatSigning ? "on" : "off",
+            ["clipboard"] = settings.AllowClipboard ? "on" : "off"
+        });
+        // Then look for updates now and every six hours while Token Vault is open.
+        while (true)
+        {
+            try { if (settings.CheckForUpdates && !updateInstalled) await CheckForUpdateAsync(); }
+            catch (Exception ex) { Log("Update check failed (" + ex.GetType().Name + ")."); }
+            await Task.Delay(TimeSpan.FromHours(6));
+        }
     }
 
     // ===================== Navigation =====================
@@ -126,14 +162,23 @@ public partial class MainWindow : Window
             var launch = instance.Apply(settings, installed);
             string clientJar = Path.Combine(launch.MinecraftDirectory, "versions", launch.MinecraftVersion, launch.MinecraftVersion + ".jar");
             launch.Protocol = await Task.Run(() => InstalledVersion.Protocol(clientJar, launch.MinecraftVersion));
-            await using var session = await Task.Run(() => VaultSession.StartAsync(launch, account, AppPaths.AuditLog, cts.Token, Observe, ApproveJoinAsync));
+            // Only the game's own processes may use the local server connections (not other programs or Windows users).
+            var origin = new ConnectionOrigin();
+            await using var session = await Task.Run(() => VaultSession.StartAsync(launch, account, AppPaths.AuditLog, cts.Token, Observe, ApproveJoinAsync, origin));
+            liveSession = session;
             Status($"Starting {instance.Name}…", tone: "Accent");
             var game = sandbox;
+            var started = DateTime.UtcNow;
+            telemetry.Track("game_launched", new Dictionary<string, string> { ["minecraft_version"] = instance.MinecraftVersion, ["loader"] = instance.Loader });
             int code = await Task.Run(() => JavaLauncher.LaunchAsync(launch, session.Descriptor, game, line =>
             {
                 Log(line);
                 if (line.StartsWith("Starting Minecraft", StringComparison.Ordinal)) Status($"Playing {instance.Name} as {account.Profile.Name}", tone: "Accent");
-            }, cts.Token));
+            }, cts.Token, process => origin.Allow((client, server) => LoopbackPeers.OwnerOf(client, server) is int pid && process.Contains(pid))));
+            telemetry.Track("game_exited", new Dictionary<string, string>
+            {
+                ["result"] = code == 0 ? "ok" : "error", ["minutes"] = ((int)(DateTime.UtcNow - started).TotalMinutes).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            });
             if (code == 0) Status("Ready");
             else Error($"Minecraft closed unexpectedly (exit code {code}). Its log is in the instance folder under logs\\latest.log.");
         }
@@ -142,6 +187,9 @@ public partial class MainWindow : Window
         finally
         {
             running = null;
+            liveSession = null;
+            ConnectionBar.Visibility = Visibility.Collapsed;
+            if (updateInstalled) ShowUpdate();
             CloseDialog(false);
             SetPlayButton(stop: false);
             SetBusy(false);
@@ -178,7 +226,8 @@ public partial class MainWindow : Window
 
     private async Task<MinecraftIdentity> EnsureSignedInAsync(CancellationToken ct)
     {
-        if (identity is { } current && current.ExpiresAt > DateTimeOffset.UtcNow.AddMinutes(15)) return current;
+        // Reused only if it outlasts a whole game session, so the session isn't cut short by an old sign-in.
+        if (identity is { } current && current.ExpiresAt > DateTimeOffset.UtcNow.AddMinutes(Math.Min(settings.SessionMinutes, 12 * 60) + 5)) return current;
         identity?.Dispose();
         identity = null;
         var cache = new RefreshCache(AppPaths.RefreshCache);
@@ -372,6 +421,8 @@ public partial class MainWindow : Window
                 instances.Add(instance);
                 InstanceStore.Save(instances);
                 RefreshLibrary(instance.Id);
+                telemetry.Track("pack_imported", new Dictionary<string, string> { ["source"] = instance.Source.Split(' ')[0], ["loader"] = instance.Loader });
+                Log($"{instance.Name}: Minecraft {instance.MinecraftVersion}, {GameInstaller.LoaderName(instance.Loader)} {instance.LoaderVersion ?? "(newest)"}.");
                 Status(instance.Missing.Count == 0 ? $"Imported {instance.Name}" : $"Imported {instance.Name}; some files need downloading by hand");
             }
         }
@@ -468,6 +519,7 @@ public partial class MainWindow : Window
         bool saved = File.Exists(AppPaths.RefreshCache);
         ConfirmJoinsSwitch.IsChecked = settings.ConfirmJoins;
         ClipboardSwitch.IsChecked = settings.AllowClipboard;
+        ChatSigningSwitch.IsChecked = settings.AllowChatSigning;
         RememberSwitch.IsChecked = settings.RememberSignIn;
         NetworkOk.Visibility = network == true ? Visibility.Visible : Visibility.Collapsed;
         NetworkButton.Visibility = network == true || sandbox is null ? Visibility.Collapsed : Visibility.Visible;
@@ -510,6 +562,21 @@ public partial class MainWindow : Window
         Status(running is not null ? "Applies the next time you press Play" : settings.AllowClipboard ? "Copy and paste allowed in the game" : "Clipboard is private");
     }
 
+    private void ChatSigning_Click(object sender, RoutedEventArgs e)
+    {
+        settings.AllowChatSigning = ChatSigningSwitch.IsChecked == true;
+        TrySaveSettings();
+        RefreshSecurity();
+        Status(running is not null ? "Applies the next time you press Play" : settings.AllowChatSigning ? "Signed chat on" : "Signed chat off: the game won't get a chat-signing key");
+    }
+
+    // Ends the live server connection. The game shows "connection lost"; the player can join again (with approval).
+    private void Disconnect_Click(object sender, RoutedEventArgs e)
+    {
+        if (liveSession?.DisconnectActive() == true) Status("Disconnected from the server");
+        ConnectionBar.Visibility = Visibility.Collapsed;
+    }
+
     private void Remember_Click(object sender, RoutedEventArgs e)
     {
         settings.RememberSignIn = RememberSwitch.IsChecked == true;
@@ -547,6 +614,8 @@ public partial class MainWindow : Window
             ("broker", "approved", var host) => new("\uE8FB", Brush("Good"), $"You approved joining {Server(host!)}", "Approved in Token Vault's window."),
             ("broker", "blocked", var host) => new("\uE733", Brush("Bad"), $"Blocked a join to {Server(host!)}", "It wasn't approved. If you didn't try to join, a mod may have."),
             ("broker", "failed", var rest) => new("\uE783", Brush("Bad"), $"Couldn't join {Server(rest!.Split(':')[0])}", "The game shows the reason on its disconnect screen."),
+            ("broker", "foreign", var host) => new("\uE733", Brush("Bad"), $"Refused a connection to {Server(host!)}", "Something other than the game tried to use your sign-in. It was turned away."),
+            ("broker", "expired", var host) => new("\uE783", Brush("Bad"), $"Couldn't join {Server(host!)}", "This game session's sign-in expired. Close Minecraft and press Play again."),
             ("broker", "busy", var host) => new("\uE733", Brush("Bad"), $"Blocked a second connection to {Server(host!)}", "Only one connection at a time is allowed. Something tried to open another."),
             ("http", _, "join-always-denied") => new("\uE733", Brush("Bad"), "Blocked a direct server sign-in", "The game asked to sign in to a server by itself. Only Token Vault does that."),
             ("http", _, var route) when route is not null && (route.StartsWith("denied", StringComparison.Ordinal) || route == "unknown-or-forbidden") =>
@@ -555,6 +624,18 @@ public partial class MainWindow : Window
             ("session", "closed", _) => new("\uE71A", Brush("Secondary"), "Game session ended", "The stand-in token and local connections were closed."),
             _ => null
         };
+        if ((part[0], part.ElementAtOrDefault(1)) is ("broker", "connected") && part.ElementAtOrDefault(2) is { } live)
+        {
+            ConnectionText.Text = $"Signed in to {Server(live)} as {identity?.Profile.Name ?? "you"}. Didn't join this yourself, or something looks wrong? Disconnect.";
+            ConnectionBar.Visibility = Visibility.Visible;
+        }
+        if ((part[0], part.ElementAtOrDefault(1)) is ("broker", "disconnected")) ConnectionBar.Visibility = Visibility.Collapsed;
+        string? statistic = (part[0], part.ElementAtOrDefault(1)) switch
+        {
+            ("broker", "approved") => "join_approved", ("broker", "blocked") => "join_blocked", ("broker", "failed") => "join_failed",
+            ("broker", "foreign") => "join_refused_foreign", _ => null
+        };
+        if (statistic is not null) telemetry.Track(statistic);
         if (item is null) return;
         activity.Insert(0, item);
         if (activity.Count > 200) activity.RemoveAt(activity.Count - 1);
@@ -571,6 +652,15 @@ public partial class MainWindow : Window
         DeviceCodeBox.IsChecked = settings.UseDeviceCode;
         ClientIdBox.Text = settings.ClientId;
         ClientIdHint.Text = $"Empty uses the built-in public ID ({AuthenticationDefaults.BuiltInClientName}'s).";
+        UpdatesBox.IsChecked = settings.CheckForUpdates;
+        UpdatesHint.Text = BuildInfo.UpdatePublicKey.Length > 0
+            ? $"Checks GitHub for new releases and installs one only if its signature matches Token Vault's release key. This is version {BuildInfo.Version}."
+            : $"Checks GitHub for new releases and tells you about them. This build can't verify updates itself, so it doesn't install them. This is version {BuildInfo.Version}.";
+        StatisticsBox.IsChecked = settings.ShareUsageStatistics == true;
+        StatisticsBox.IsEnabled = telemetry.Configured;
+        StatisticsHint.Text = telemetry.Configured
+            ? "Which features are used and whether launches and joins work. Never your account, servers, mods, files or anything from the game."
+            : "This build doesn't send statistics.";
     }
 
     private void SettingsSave_Click(object sender, RoutedEventArgs e)
@@ -579,12 +669,17 @@ public partial class MainWindow : Window
         next.JavaPath = JavaBox.Text.Trim();
         next.UseDeviceCode = DeviceCodeBox.IsChecked == true;
         next.ClientId = ClientIdBox.Text.Trim();
+        next.CheckForUpdates = UpdatesBox.IsChecked == true;
+        if (telemetry.Configured) next.ShareUsageStatistics = StatisticsBox.IsChecked == true;
+        bool consented = next.ShareUsageStatistics == true && settings.ShareUsageStatistics != true;
         if (!int.TryParse(MemoryBox.Text, out int memory) || memory is < 512 or > 65536) { Error("Memory must be between 512 and 65536 MB."); return; }
         next.MemoryMb = memory;
         try { next.Save(AppPaths.Config); }
         catch (InvalidDataException ex) { Error(ex.Message); return; }
         if (next.ClientId != settings.ClientId) { identity?.Dispose(); identity = null; } // a different app means signing in again
         settings = next;
+        if (consented) telemetry.Track("consent_given");
+        if (settings.CheckForUpdates && update is null) _ = CheckForUpdateAsync();
         HideBanner();
         Status("Settings saved");
         RefreshSecurity();
@@ -606,6 +701,80 @@ public partial class MainWindow : Window
     {
         try { settings.Save(AppPaths.Config); } catch (Exception ex) { Error(ex); }
     }
+
+    // ===================== Updates =====================
+
+    // Finds a newer release; when this build can verify it, downloads it, checks its signature and puts it in place
+    // (it runs from the next start). Otherwise only offers the download page.
+    private async Task CheckForUpdateAsync()
+    {
+        try
+        {
+            using var http = Updater.CreateHttp();
+            var updater = new Updater(http, BuildInfo.UpdateRepository, BuildInfo.UpdatePublicKey, BuildInfo.Version);
+            var found = await Task.Run(() => updater.CheckAsync(CancellationToken.None));
+            if (found is null || updateInstalled) return;
+            update = found;
+            telemetry.Track("update_available", new Dictionary<string, string> { ["from_version"] = BuildInfo.Version.ToString(), ["to_version"] = found.Version.ToString() });
+            string? exe = Environment.ProcessPath;
+            if (updater.CanInstall && found.Installable && exe is not null && Path.GetFileName(exe).Equals("TokenVault.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                Log($"Downloading Token Vault {found.Version}…");
+                string staging = Path.Combine(AppPaths.Root, "Updates");
+                PrivateDirectory.Ensure(staging);
+                var staged = await Task.Run(() => updater.DownloadAsync(found, staging, CancellationToken.None));
+                Updater.Install(staged, exe);
+                updateInstalled = true;
+                Log($"Token Vault {found.Version} is installed; it starts next time.");
+                telemetry.Track("update_installed", new Dictionary<string, string> { ["from_version"] = BuildInfo.Version.ToString(), ["to_version"] = found.Version.ToString() });
+            }
+            ShowUpdate();
+        }
+        catch (Exception ex) when (ex is UpdateException or System.Net.Http.HttpRequestException or IOException or UnauthorizedAccessException or
+                                       System.Text.Json.JsonException or TaskCanceledException or KeyNotFoundException or InvalidOperationException)
+        {
+            Log("Update: " + (ex is UpdateException or System.Net.Http.HttpRequestException ? ex.Message : ex.GetType().Name));
+            if (ex is UpdateException) telemetry.Track("update_failed");
+            if (update is not null) ShowUpdate();
+        }
+    }
+
+    private void ShowUpdate()
+    {
+        if (update is null) return;
+        if (updateInstalled)
+        {
+            UpdateText.Text = running is null
+                ? $"Token Vault {update.Version} is installed. Restart to start using it."
+                : $"Token Vault {update.Version} is installed. It starts the next time you open Token Vault.";
+            UpdateButton.Content = "Restart now";
+            UpdateButton.Visibility = running is null ? Visibility.Visible : Visibility.Collapsed;
+        }
+        else
+        {
+            UpdateText.Text = $"Token Vault {update.Version} is available.";
+            UpdateButton.Content = "Download";
+            UpdateButton.Visibility = Visibility.Visible;
+        }
+        UpdateBar.Visibility = Visibility.Visible;
+    }
+
+    private void Update_Click(object sender, RoutedEventArgs e)
+    {
+        if (update is null) return;
+        if (!updateInstalled)
+        {
+            if (update.Page.Scheme == "https" && update.Page.Host == "github.com") Open(update.Page.AbsoluteUri);
+            return;
+        }
+        if (running is not null || Environment.ProcessPath is not { } exe) return;
+        try { Process.Start(new ProcessStartInfo(exe) { UseShellExecute = false, ArgumentList = { App.AfterUpdate } })?.Dispose(); }
+        catch (System.ComponentModel.Win32Exception) { Error("Couldn't restart Token Vault. Close it and open it again to finish updating."); return; }
+        closeConfirmed = true;
+        Application.Current.Shutdown();
+    }
+
+    private void UpdateClose_Click(object sender, RoutedEventArgs e) => UpdateBar.Visibility = Visibility.Collapsed;
 
     // ===================== Dialog overlay =====================
 

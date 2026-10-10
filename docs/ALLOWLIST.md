@@ -7,8 +7,10 @@ The executable Authlib probe and manual acceptance procedure collect that eviden
 | Method and local path | Default | Upstream | Credential |
 |---|---|---|---|
 | GET /services/player/attributes | Allow | api.minecraftservices.com/player/attributes | Vault bearer |
-| POST /services/player/certificates | Allow | api.minecraftservices.com/player/certificates | Vault bearer |
+| POST /services/player/certificates | Allow unless signed chat is off | api.minecraftservices.com/player/certificates | Vault bearer |
 | GET /services/publickeys | Allow | api.minecraftservices.com/publickeys | None |
+| GET /services/privileges | Allow (Minecraft 1.16.4–1.17) | api.minecraftservices.com/privileges | Vault bearer |
+| GET /session/session/minecraft/profile/&lt;uuid&gt; | Allow (`?unsigned=true/false` only) | sessionserver.mojang.com/session/minecraft/profile/&lt;uuid&gt; | None |
 | POST /session/session/minecraft/join | **Always 403** | None | None |
 | POST /session/minecraft/join | **Always 403** | None | None |
 | Name changes, skin changes, telemetry, entitlements, all other paths/methods | **403** | None | None |
@@ -29,7 +31,12 @@ A response containing the real bearer token is refused and its buffer erased.
 
 Certificate responses contain a profile/chat private signing key. The JVM needs
 that key for signed chat. It is not the Minecraft bearer token and does not
-replace online-mode join authentication. A malicious mod can misuse it.
+replace online-mode join authentication. A malicious mod can copy it and sign
+chat as the player until it expires (about two days). Turning "Signed chat" off
+on the Security page removes this route from the effective list.
+
+Every request, including one with a wrong bearer, counts toward a limit of 120
+per minute.
 
 Observation mode still enforces the identical policy. Denied routes remain denied;
 there is intentionally no permissive training mode using real credentials.

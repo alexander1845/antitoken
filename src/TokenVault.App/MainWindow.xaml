@@ -64,15 +64,36 @@
         <RowDefinition Height="*"/>
       </Grid.RowDefinitions>
 
-      <!-- Error / notice banner -->
-      <Border x:Name="Banner" Visibility="Collapsed" Background="{DynamicResource BadTint}" BorderBrush="{DynamicResource Bad}" BorderThickness="3,0,0,0">
-        <Grid Margin="16,10,8,10">
-          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-          <TextBlock x:Name="BannerIcon" Text="&#xE783;" Style="{StaticResource Icon}" Foreground="{DynamicResource Bad}" VerticalAlignment="Top" Margin="0,2,12,0"/>
-          <TextBlock x:Name="BannerText" Grid.Column="1" Style="{StaticResource Body}" VerticalAlignment="Center"/>
-          <Button Grid.Column="2" Content="&#xE711;" Style="{StaticResource IconButton}" Width="28" Height="28" FontSize="11" ToolTip="Dismiss" Click="Banner_Close"/>
-        </Grid>
-      </Border>
+      <!-- Error / notice banner, live connection, update -->
+      <StackPanel>
+        <Border x:Name="Banner" Visibility="Collapsed" Background="{DynamicResource BadTint}" BorderBrush="{DynamicResource Bad}" BorderThickness="3,0,0,0">
+          <Grid Margin="16,10,8,10">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBlock x:Name="BannerIcon" Text="&#xE783;" Style="{StaticResource Icon}" Foreground="{DynamicResource Bad}" VerticalAlignment="Top" Margin="0,2,12,0"/>
+            <TextBlock x:Name="BannerText" Grid.Column="1" Style="{StaticResource Body}" VerticalAlignment="Center"/>
+            <Button Grid.Column="2" Content="&#xE711;" Style="{StaticResource IconButton}" Width="28" Height="28" FontSize="11" ToolTip="Dismiss" Click="Banner_Close"/>
+          </Grid>
+        </Border>
+
+        <Border x:Name="ConnectionBar" Visibility="Collapsed" Background="{DynamicResource AccentTint}" BorderBrush="{DynamicResource Accent}" BorderThickness="3,0,0,0">
+          <Grid Margin="16,8,12,8">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBlock Text="&#xE701;" Style="{StaticResource Icon}" Foreground="{DynamicResource Accent}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+            <TextBlock x:Name="ConnectionText" Grid.Column="1" Style="{StaticResource Body}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,12,0"/>
+            <Button Grid.Column="2" Content="Disconnect" VerticalAlignment="Center" Click="Disconnect_Click"/>
+          </Grid>
+        </Border>
+
+        <Border x:Name="UpdateBar" Visibility="Collapsed" Background="{DynamicResource AccentTint}" BorderBrush="{DynamicResource Accent}" BorderThickness="3,0,0,0">
+          <Grid Margin="16,8,8,8">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBlock Text="&#xE896;" Style="{StaticResource Icon}" Foreground="{DynamicResource Accent}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+            <TextBlock x:Name="UpdateText" Grid.Column="1" Style="{StaticResource Body}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,12,0"/>
+            <Button x:Name="UpdateButton" Grid.Column="2" Style="{StaticResource Primary}" VerticalAlignment="Center" Padding="16,0" Click="Update_Click"/>
+            <Button Grid.Column="3" Content="&#xE711;" Style="{StaticResource IconButton}" Width="28" Height="28" FontSize="11" Margin="8,0,0,0" ToolTip="Later" Click="UpdateClose_Click"/>
+          </Grid>
+        </Border>
+      </StackPanel>
 
       <!-- ===== Library ===== -->
       <Grid x:Name="LibraryPage" Grid.Row="1">
@@ -329,6 +350,16 @@
               <Rectangle Style="{StaticResource Rule}"/>
               <Grid Margin="18,14">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock Text="&#xE8BD;" Style="{StaticResource Icon}" FontSize="17" Foreground="{DynamicResource Secondary}" VerticalAlignment="Top" Margin="0,2,16,0"/>
+                <StackPanel Grid.Column="1" Margin="0,0,20,0">
+                  <TextBlock Text="Signed chat (Minecraft 1.19 and newer)" FontWeight="SemiBold"/>
+                  <TextBlock Text="Many servers require it. A mod could copy the chat-signing key and send chat as you for about two days, but it can't sign in as you. Off: unsigned chat, and servers that require signing won't let you join." Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                </StackPanel>
+                <CheckBox x:Name="ChatSigningSwitch" Grid.Column="2" Style="{StaticResource Switch}" Click="ChatSigning_Click"/>
+              </Grid>
+              <Rectangle Style="{StaticResource Rule}"/>
+              <Grid Margin="18,14">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBlock Text="&#xE72E;" Style="{StaticResource Icon}" FontSize="17" Foreground="{DynamicResource Secondary}" VerticalAlignment="Top" Margin="0,2,16,0"/>
                 <StackPanel Grid.Column="1" Margin="0,0,20,0">
                   <TextBlock Text="Stay signed in on this PC" FontWeight="SemiBold"/>
@@ -486,6 +517,25 @@
                 </StackPanel>
                 <TextBox x:Name="ClientIdBox" Grid.Column="1" Width="300" VerticalAlignment="Center" FontFamily="Cascadia Mono, Consolas" FontSize="12"/>
               </Grid>
+            </StackPanel>
+          </Border>
+
+          <TextBlock Text="Updates and privacy" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,28,0,8"/>
+          <Border BorderBrush="{DynamicResource Line}" BorderThickness="1">
+            <StackPanel>
+              <CheckBox x:Name="UpdatesBox" Margin="18,14">
+                <StackPanel>
+                  <TextBlock Text="Keep Token Vault up to date" FontWeight="SemiBold"/>
+                  <TextBlock x:Name="UpdatesHint" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+                </StackPanel>
+              </CheckBox>
+              <Rectangle Style="{StaticResource Rule}"/>
+              <CheckBox x:Name="StatisticsBox" Margin="18,14">
+                <StackPanel>
+                  <TextBlock Text="Share anonymous usage statistics" FontWeight="SemiBold"/>
+                  <TextBlock x:Name="StatisticsHint" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+                </StackPanel>
+              </CheckBox>
             </StackPanel>
           </Border>
 

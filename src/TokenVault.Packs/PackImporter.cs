@@ -7,7 +7,7 @@ using TokenVault.Launcher;
 
 namespace TokenVault.Packs;
 
-// Imports modpacks into a NEW instance folder. Supported:
+// Imports modpacks into a NEW instance folder, set up for the Minecraft version and loader the pack declares. Supported:
 //   Modrinth .mrpack · CurseForge .zip (manifest.json) · Prism/MultiMC exports (mmc-pack.json / instance.cfg)
 //   any .zip / .7z / .rar / .tar(.gz) or folder containing mods or a .minecraft-style folder · single .jar mods.
 // Everything is unpacked by Token Vault into a folder the sandbox has never had access to, then handed to the
@@ -15,6 +15,9 @@ namespace TokenVault.Packs;
 // pack provides hashes. Mods still only ever run inside the sandbox.
 public sealed class PackImporter(HttpClient http)
 {
+    // Bytes actually written by this import (archive entries can lie about their sizes). Shared by parallel downloads.
+    private long written;
+
     public static readonly string[] Extensions = [".mrpack", ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".jar"];
     public const string Filter = "Modpacks and mods|*.mrpack;*.zip;*.7z;*.rar;*.tar;*.gz;*.tgz;*.jar|All files|*.*";
 
@@ -51,6 +54,9 @@ public sealed class PackImporter(HttpClient http)
             }
             if (instance.CountMods() == 0 && instance.Missing.Count == 0 && kind == PackKind.Loose)
                 throw new UserVisibleException("No mods were found in " + Path.GetFileName(path) + ".");
+            // Loose files don't say what they're for: read it from the mods themselves (newest loader build is used).
+            if (kind == PackKind.Loose && ModInfo.Detect(instance.ModsDirectory) is { } detected)
+                ApplyLoader(instance, detected.Minecraft, detected.Loader, null);
             return instance;
         }
         catch
@@ -111,21 +117,33 @@ public sealed class PackImporter(HttpClient http)
         catch (UserVisibleException) { return false; }
     }
 
-    internal static void RequireCompatible(string? minecraft, string? loader, string? otherLoader)
+    // Sets the instance's Minecraft version and loader from what the pack declares. Loader versions are stored the way
+    // GameInstaller expects them: Forge (and NeoForge for 1.20.1) as "<minecraft>-<build>", NeoForge otherwise as its own number.
+    internal static void ApplyLoader(Instance instance, string? minecraft, string? loader, string? version)
     {
-        string supported = new Configuration().MinecraftVersion;
-        if (otherLoader is not null)
-            throw new UserVisibleException($"This pack uses {otherLoader}. Token Vault runs Fabric mods only, so it can't play this pack.");
-        if (minecraft is not null && minecraft != supported)
-            throw new UserVisibleException($"This pack is made for Minecraft {minecraft}. Token Vault currently plays Minecraft {supported} only.");
-        _ = loader;
+        if (minecraft is not null)
+        {
+            if (!Configuration.IsVersionId(minecraft)) throw new UserVisibleException("The pack names an invalid Minecraft version.");
+            instance.MinecraftVersion = minecraft;
+        }
+        loader ??= "vanilla";
+        if (!TokenVault.Launcher.GameInstaller.Loaders.Contains(loader))
+            throw new UserVisibleException($"This pack uses {loader}, which Token Vault can't install.");
+        if (version is not null && !Configuration.IsVersionId(version)) throw new UserVisibleException("The pack names an invalid loader version.");
+        bool prefixed = loader == "forge" || (loader == "neoforge" && instance.MinecraftVersion == "1.20.1");
+        instance.Loader = loader;
+        instance.LoaderVersion = loader == "vanilla" || version is null ? null
+            : prefixed && !version.StartsWith(instance.MinecraftVersion + "-", StringComparison.Ordinal) ? instance.MinecraftVersion + "-" + version
+            : version;
     }
 
-    private static string? OtherLoader(string id) => id.ToLowerInvariant() switch
+    // Loader ids as Modrinth, CurseForge and Prism name them.
+    internal static string? LoaderId(string id) => id.ToLowerInvariant() switch
     {
-        var s when s.StartsWith("neoforge") || s.StartsWith("net.neoforged") => "NeoForge",
-        var s when s.StartsWith("forge") || s.StartsWith("net.minecraftforge") => "Forge",
-        var s when s.StartsWith("quilt") || s.StartsWith("org.quiltmc") => "Quilt",
+        "fabric-loader" or "net.fabricmc.fabric-loader" or "fabric" => "fabric",
+        "quilt-loader" or "org.quiltmc.quilt-loader" or "quilt" => "quilt",
+        "forge" or "net.minecraftforge" => "forge",
+        "neoforge" or "net.neoforged" => "neoforge",
         _ => null
     };
 
@@ -137,16 +155,15 @@ public sealed class PackImporter(HttpClient http)
         var r = index.RootElement;
         if (r.TryGetProperty("game", out var game) && game.GetString() != "minecraft") throw new UserVisibleException("This Modrinth pack is not for Minecraft.");
         var deps = r.GetProperty("dependencies");
-        string? minecraft = null, fabric = null, other = null;
+        string? minecraft = null, loader = null, loaderVersion = null;
         foreach (var dep in deps.EnumerateObject())
         {
             if (dep.Name == "minecraft") minecraft = dep.Value.GetString();
-            else if (dep.Name == "fabric-loader") fabric = dep.Value.GetString();
-            else other ??= OtherLoader(dep.Name) ?? null;
+            else if (LoaderId(dep.Name) is { } id) { loader = id; loaderVersion = dep.Value.GetString(); }
+            else throw new UserVisibleException($"This pack needs {dep.Name}, which Token Vault can't install.");
         }
-        RequireCompatible(minecraft, fabric, other);
+        ApplyLoader(instance, minecraft, loader, loaderVersion);
         instance.Source = "Modrinth";
-        instance.LoaderVersion = fabric;
         if (r.TryGetProperty("name", out var name) && name.GetString() is { Length: > 0 } n) instance.Name = n;
 
         var downloads = new List<(Uri Url, string Target, string? Sha512, string? Sha1, long Size)>();
@@ -170,8 +187,8 @@ public sealed class PackImporter(HttpClient http)
             await DownloadAsync(d.Url, d.Target, d.Size > 0 ? d.Size : SafeFiles.MaxFileBytes, d.Sha512, d.Sha1, ct);
             progress?.Report(new($"Downloading mods — {Interlocked.Increment(ref done)} of {downloads.Count}", (double)done / downloads.Count));
         }, ct);
-        await CopyTreeAsync(source, root + "overrides/", instance.Directory, ct);
-        await CopyTreeAsync(source, root + "client-overrides/", instance.Directory, ct);
+        await CopyTreeAsync(source, root + "overrides/", instance.Directory, false, ct);
+        await CopyTreeAsync(source, root + "client-overrides/", instance.Directory, false, ct);
     }
 
     // ---------- CurseForge (.zip with manifest.json)
@@ -181,16 +198,18 @@ public sealed class PackImporter(HttpClient http)
         using var manifest = source.ReadJson(source.Get(root + "manifest.json"));
         var r = manifest.RootElement;
         var mc = r.GetProperty("minecraft");
-        string? fabric = null, other = null;
-        foreach (var loader in mc.GetProperty("modLoaders").EnumerateArray())
+        string? loader = null, loaderVersion = null;
+        // "forge-47.2.0", "neoforge-21.1.77", "fabric-0.16.9", "quilt-0.26.0"; the primary one wins.
+        foreach (var entry in mc.GetProperty("modLoaders").EnumerateArray()
+                     .OrderByDescending(l => l.TryGetProperty("primary", out var p) && p.ValueKind == JsonValueKind.True))
         {
-            string id = loader.GetProperty("id").GetString() ?? "";
-            if (id.StartsWith("fabric-", StringComparison.OrdinalIgnoreCase)) fabric = id["fabric-".Length..];
-            else other ??= OtherLoader(id) ?? "an unsupported mod loader";
+            string id = entry.GetProperty("id").GetString() ?? "";
+            int dash = id.IndexOf('-');
+            if (dash > 0 && LoaderId(id[..dash]) is { } known) { loader = known; loaderVersion = id[(dash + 1)..]; break; }
+            throw new UserVisibleException($"This pack uses {id}, which Token Vault can't install.");
         }
-        RequireCompatible(mc.GetProperty("version").GetString(), fabric, other);
+        ApplyLoader(instance, mc.GetProperty("version").GetString(), loader, loaderVersion);
         instance.Source = "CurseForge";
-        instance.LoaderVersion = fabric;
         if (r.TryGetProperty("name", out var name) && name.GetString() is { Length: > 0 } n) instance.Name = n;
 
         var files = r.GetProperty("files").EnumerateArray()
@@ -209,6 +228,7 @@ public sealed class PackImporter(HttpClient http)
                 {
                     string fileName = SafeFiles.FileName(Uri.UnescapeDataString(final.Segments[^1]));
                     string folder = fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) ? "resourcepacks/" : "mods/";
+                    // CurseForge publishes no hash without an API key; these files are checked only by HTTPS.
                     await SaveAsync(stream, SafeFiles.Under(instance.Directory, folder + fileName), SafeFiles.MaxFileBytes, null, null, ct);
                 }
             }
@@ -220,14 +240,14 @@ public sealed class PackImporter(HttpClient http)
         }, ct);
         instance.Missing = missing.ToList();
         string overrides = r.TryGetProperty("overrides", out var o) && o.GetString() is { Length: > 0 } od ? od.Trim('/') + "/" : "overrides/";
-        await CopyTreeAsync(source, root + overrides, instance.Directory, ct);
+        await CopyTreeAsync(source, root + overrides, instance.Directory, false, ct);
     }
 
     // ---------- Prism Launcher / MultiMC export
 
-    private static async Task PrismAsync(PackSource source, string root, Instance instance, IProgress<InstallProgress>? progress, CancellationToken ct)
+    private async Task PrismAsync(PackSource source, string root, Instance instance, IProgress<InstallProgress>? progress, CancellationToken ct)
     {
-        string? minecraft = null, fabric = null, other = null;
+        string? minecraft = null, loader = null, loaderVersion = null;
         if (source.TryGet(root + "mmc-pack.json") is { } pack)
         {
             using var json = source.ReadJson(pack);
@@ -236,51 +256,53 @@ public sealed class PackImporter(HttpClient http)
                 string uid = component.GetProperty("uid").GetString() ?? "";
                 string? version = component.TryGetProperty("version", out var v) ? v.GetString() : null;
                 if (uid == "net.minecraft") minecraft = version;
-                else if (uid == "net.fabricmc.fabric-loader") fabric = version;
-                else other ??= OtherLoader(uid);
+                else if (LoaderId(uid) is { } id) { loader = id; loaderVersion = version; }
             }
         }
-        RequireCompatible(minecraft, fabric, other);
+        ApplyLoader(instance, minecraft, loader, loaderVersion);
         instance.Source = "Prism / MultiMC";
-        instance.LoaderVersion = fabric;
         if (source.TryGet(root + "instance.cfg") is { } cfg)
             foreach (string line in source.ReadText(cfg).Split('\n'))
                 if (line.StartsWith("name=", StringComparison.Ordinal) && line[5..].Trim() is { Length: > 0 } n) instance.Name = n;
         progress?.Report(new("Copying files…", 0.5));
         string game = source.Entries.Any(e => e.Path.StartsWith(root + ".minecraft/", StringComparison.Ordinal)) ? ".minecraft/" : "minecraft/";
-        await CopyTreeAsync(source, root + game, instance.Directory, ct);
+        // An export is the player's own game folder: only mods, settings, packs and worlds are taken from it.
+        await CopyTreeAsync(source, root + game, instance.Directory, true, ct);
     }
 
     // ---------- Anything else: a folder/archive with mods/, or loose .jar files
 
-    private static async Task LooseAsync(PackSource source, string root, Instance instance, IProgress<InstallProgress>? progress, CancellationToken ct)
+    private async Task LooseAsync(PackSource source, string root, Instance instance, IProgress<InstallProgress>? progress, CancellationToken ct)
     {
         instance.Source = "Files";
         progress?.Report(new("Copying files…", 0.5));
-        if (root != "\0jars") { await CopyTreeAsync(source, root, instance.Directory, ct); return; }
+        // Usually a zipped .minecraft or game folder: only mods, settings, packs and worlds are taken from it.
+        if (root != "\0jars") { await CopyTreeAsync(source, root, instance.Directory, true, ct); return; }
         foreach (var entry in source.Entries.Where(e => IsModFile(e.Path)))
             await SaveEntryAsync(entry, SafeFiles.Under(instance.Directory, "mods/" + SafeFiles.FileName(entry.Path)), ct);
     }
 
     // ---------- Helpers
 
-    private static async Task CopyTreeAsync(PackSource source, string prefix, string destination, CancellationToken ct)
+    // gameFolder: the source is a player's own game folder, so only IsGameContent paths are copied. Credential files are
+    // never copied from anywhere.
+    private async Task CopyTreeAsync(PackSource source, string prefix, string destination, bool gameFolder, CancellationToken ct)
     {
         foreach (var entry in source.Entries.Where(e => e.Path.StartsWith(prefix, StringComparison.Ordinal)))
         {
             string relative = entry.Path[prefix.Length..];
-            if (relative.Length == 0 || SafeFiles.IsCredentialFile(relative)) continue;
+            if (relative.Length == 0 || SafeFiles.IsCredentialFile(relative) || (gameFolder && !SafeFiles.IsGameContent(relative))) continue;
             await SaveEntryAsync(entry, SafeFiles.Under(destination, relative), ct);
         }
     }
 
-    private static async Task SaveEntryAsync(PackEntry entry, string target, CancellationToken ct)
+    private async Task SaveEntryAsync(PackEntry entry, string target, CancellationToken ct)
     {
         await using var input = entry.Open();
         await SaveAsync(input, target, SafeFiles.MaxFileBytes, null, null, ct);
     }
 
-    private static async Task SaveAsync(Stream input, string target, long limit, string? sha512, string? sha1, CancellationToken ct)
+    private async Task SaveAsync(Stream input, string target, long limit, string? sha512, string? sha1, CancellationToken ct)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
         string part = target + ".part";
@@ -288,7 +310,9 @@ public sealed class PackImporter(HttpClient http)
         {
             await using (var output = new FileStream(part, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
             {
-                await SafeFiles.CopyBoundedAsync(input, output, limit, ct);
+                long size = await SafeFiles.CopyBoundedAsync(input, output, Math.Min(limit, SafeFiles.MaxPackBytes - Interlocked.Read(ref written)), ct);
+                if (Interlocked.Add(ref written, size) > SafeFiles.MaxPackBytes)
+                    throw new UserVisibleException("The pack is larger than it claims, or larger than Token Vault allows.");
                 if (sha512 is not null || sha1 is not null)
                 {
                     output.Position = 0;

@@ -81,6 +81,14 @@ public sealed class TpmKeyWrap : IKeyWrap
         catch (PlatformNotSupportedException) { return null; }
     }
 
+    // true: the key exists. false: it's gone (signed out, TPM cleared). null: the TPM couldn't be asked right now.
+    public static bool? KeyExists()
+    {
+        try { return CngKey.Exists(KeyName, Platform); }
+        catch (CryptographicException) { return null; }
+        catch (PlatformNotSupportedException) { return false; }
+    }
+
     // Removes the TPM key (sign-out). Without it, any copy of the old file can never be opened again.
     public static void Delete()
     {

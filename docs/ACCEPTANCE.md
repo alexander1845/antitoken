@@ -94,3 +94,24 @@ gameplay stream. Testing must not label this project an all-purpose mod sandbox.
    Security page shows the new format after the next token refresh.
 4. Sign out, restore the old `vault.bin` from a copy, start Token Vault: it must ask for a new sign-in
    (the TPM key was destroyed).
+
+## Release 1.1 checks (Windows)
+
+1. **Game-only brokers.** While the game runs, open a TCP connection to a broker port (shown in the instance's
+   `servers.dat`) from PowerShell: `Test-NetConnection 127.0.0.1 -Port <port>`. Activity shows "Refused a
+   connection"; no approval prompt appears. Joining from the game's server list still works.
+2. **Join prompt.** When the prompt appears, Join is greyed out for about a second and only becomes clickable
+   while the prompt is the active window. Its position and button order change between prompts.
+3. **Disconnect.** After joining, the green bar names the server. Disconnect drops the game to its
+   "connection lost" screen; joining again asks again.
+4. **Long sessions.** With `SessionMinutes` set to 2, join a server and keep playing past 2 minutes: the
+   connection stays up. A new join after that is refused with an "expired" message in the game.
+5. **Signed chat off.** Turn it off, launch 1.19.1+, join a server with `enforce-secure-profile=false`: chat
+   works unsigned. With `enforce-secure-profile=true` the server refuses the join.
+6. **Pack import.** Zip a `.minecraft` that contains mods for another Minecraft version and an
+   `essential/microsoft_accounts.json`: the new instance has that version, and no account file.
+7. **Updates.** Publish a signed pre-release build as `v<next>`; an older build installed in a user folder
+   downloads it, shows "installed", restarts into it, and removes `TokenVault.exe.old`. Replace the
+   release zip with a modified one: the update is refused and nothing changes.
+8. **Statistics.** With a test PostHog project key, answer "No thanks": nothing is sent (check with a proxy).
+   Answer yes: events arrive without account names, servers or paths.

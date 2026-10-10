@@ -21,18 +21,24 @@ public static class MinecraftCrypto
 // .NET's CFB transform buffers whole AES blocks on some platforms. Minecraft needs
 // immediate one-byte progress. Implement the standard CFB8 mode using platform AES,
 // with independent published/independently generated vectors in the test suite.
+// Decryption is batched: every shift-register state is made of ciphertext bytes that are already known, so all the
+// keystream blocks for a chunk come from one AES-ECB call instead of one call per byte. Encryption is inherently
+// sequential (each register needs the previous output), which is fine for the small client-to-server direction.
 internal sealed class Cfb8Transform : ICryptoTransform
 {
-    private readonly ICryptoTransform aes;
+    private const int Chunk = 4096;
+    private readonly Aes aes;
     private readonly byte[] register;
-    private readonly byte[] output = new byte[16];
+    private readonly byte[] block = new byte[16];
+    private readonly byte[] joined = new byte[16 + Chunk];      // register followed by this chunk's ciphertext
+    private readonly byte[] windows = new byte[16 * Chunk];     // the register state before each byte
+    private readonly byte[] keystream = new byte[16 * Chunk];
     private readonly bool encrypt;
     public Cfb8Transform(byte[] key, bool encrypt)
     {
         if (key.Length != 16) throw new ArgumentException("Minecraft requires a 16-byte AES key.");
-        using var algorithm = Aes.Create();
-        algorithm.Mode = CipherMode.ECB; algorithm.Padding = PaddingMode.None; algorithm.Key = key;
-        aes = algorithm.CreateEncryptor(); register = key.ToArray(); this.encrypt = encrypt;
+        aes = Aes.Create(); aes.Key = key;
+        register = key.ToArray(); this.encrypt = encrypt;
     }
     public int InputBlockSize => 1;
     public int OutputBlockSize => 1;
@@ -40,14 +46,28 @@ internal sealed class Cfb8Transform : ICryptoTransform
     public bool CanReuseTransform => false;
     public int TransformBlock(byte[] inputBuffer, int inputOffset, int inputCount, byte[] outputBuffer, int outputOffset)
     {
-        for (int i = 0; i < inputCount; i++)
+        if (encrypt)
         {
-            aes.TransformBlock(register, 0, 16, output, 0);
-            byte source = inputBuffer[inputOffset + i];
-            byte transformed = (byte)(source ^ output[0]);
-            Buffer.BlockCopy(register, 1, register, 0, 15);
-            register[15] = encrypt ? transformed : source;
-            outputBuffer[outputOffset + i] = transformed;
+            for (int i = 0; i < inputCount; i++)
+            {
+                aes.EncryptEcb(register, block, PaddingMode.None);
+                byte transformed = (byte)(inputBuffer[inputOffset + i] ^ block[0]);
+                Buffer.BlockCopy(register, 1, register, 0, 15);
+                register[15] = transformed;
+                outputBuffer[outputOffset + i] = transformed;
+            }
+            return inputCount;
+        }
+        for (int done = 0; done < inputCount; done += Chunk)
+        {
+            int n = Math.Min(Chunk, inputCount - done);
+            // Copy the ciphertext first: input and output may be the same buffer.
+            Buffer.BlockCopy(register, 0, joined, 0, 16);
+            Buffer.BlockCopy(inputBuffer, inputOffset + done, joined, 16, n);
+            for (int i = 0; i < n; i++) Buffer.BlockCopy(joined, i, windows, i * 16, 16);
+            aes.EncryptEcb(windows.AsSpan(0, n * 16), keystream.AsSpan(0, n * 16), PaddingMode.None);
+            for (int i = 0; i < n; i++) outputBuffer[outputOffset + done + i] = (byte)(joined[16 + i] ^ keystream[i * 16]);
+            Buffer.BlockCopy(joined, n, register, 0, 16);
         }
         return inputCount;
     }
@@ -55,7 +75,11 @@ internal sealed class Cfb8Transform : ICryptoTransform
     {
         byte[] result = new byte[inputCount]; TransformBlock(inputBuffer, inputOffset, inputCount, result, 0); return result;
     }
-    public void Dispose() { aes.Dispose(); CryptographicOperations.ZeroMemory(register); CryptographicOperations.ZeroMemory(output); }
+    public void Dispose()
+    {
+        aes.Dispose();
+        foreach (byte[] buffer in new[] { register, block, joined, windows, keystream }) CryptographicOperations.ZeroMemory(buffer);
+    }
 }
 
 // Streaming CFB8, no block padding, independent continuous state per direction.

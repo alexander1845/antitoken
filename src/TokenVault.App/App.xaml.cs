@@ -8,12 +8,19 @@ namespace TokenVault.App;
 public partial class App : Application
 {
     private Mutex? single;
+    public const string AfterUpdate = "--after-update";
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         // One vault per Windows session: the local ports and the sandbox profile are shared.
         single = new Mutex(initiallyOwned: true, @"Local\TokenVault.App", out bool first);
+        // Restarted by the updater: the previous copy is still closing, so wait for it instead of refusing to start.
+        if (!first && e.Args.Contains(AfterUpdate))
+        {
+            try { first = single.WaitOne(TimeSpan.FromSeconds(20)); }
+            catch (AbandonedMutexException) { first = true; }
+        }
         if (!first)
         {
             MessageBox.Show("Token Vault is already open.", "Token Vault", MessageBoxButton.OK, MessageBoxImage.Information);
