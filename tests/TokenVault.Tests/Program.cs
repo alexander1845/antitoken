@@ -51,7 +51,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("batched AES-CFB8 matches the byte-by-byte definition", Cfb8BatchTests),
     ("pack import: game-folder allowlist, credential filter, versions and loaders", PackImportTests),
     ("updater: signed manifest, rollback and tamper refusal, in-place install", UpdaterTests),
-    ("usage statistics: fixed vocabulary, project keys only", TelemetryTests)
+    ("usage statistics: fixed vocabulary, project keys only", TelemetryTests),
+    ("Modrinth: compatible versions, dependencies, checksums, CDN only", ModrinthTests)
 };
 int failures = 0;
 foreach (var test in tests)
@@ -352,6 +353,7 @@ static Task SandboxTests()
     catch (UserVisibleException) { }
     SandboxPolicy.CheckWrite(c, Path.Combine(AppPaths.Root, "Instance"), [libraries]);
     Check(SandboxPolicy.IsWithin("C:/a/bc", "C:/a/b") == false && SandboxPolicy.IsWithin("C:/a/b/c", "C:/a/b"), "Prefix confusion in IsWithin.");
+    GameFolderRepairTests();
 
     // Arguments must reach java.exe exactly as given (CommandLineToArgvW rules).
     Check(WindowsCommandLine.Build("C:/j/java.exe", ["-Da=b", "two words", "", "q\"x", @"tail\", @"C:\dir with space\"]) ==
@@ -373,6 +375,60 @@ static Task SandboxTests()
     try { JavaTrustStore.Create([("Dup", cert.RawData)], DateTimeOffset.UnixEpoch); throw new Exception("Uppercase alias accepted."); }
     catch (ArgumentException) { }
     return Task.CompletedTask;
+}
+
+// A game folder an earlier build left open to other accounts is made private in place, keeping its contents; one with a
+// link inside is refused rather than having permissions applied wherever the link points.
+static void GameFolderRepairTests()
+{
+    if (!OperatingSystem.IsWindows()) return;
+    var others = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.AuthenticatedUserSid, null);
+    string OpenFolder()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "tv-gameroot-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(path, "Instances", "a"));
+        File.WriteAllText(Path.Combine(path, "Instances", "a", "world.dat"), "keep");
+        var info = new DirectoryInfo(path);
+        var acl = info.GetAccessControl();
+        acl.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(others, System.Security.AccessControl.FileSystemRights.Modify,
+            System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit,
+            System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow));
+        info.SetAccessControl(acl);
+        return path;
+    }
+    bool OthersCanReach(string path)
+    {
+        foreach (System.Security.AccessControl.FileSystemAccessRule rule in new FileInfo(path).GetAccessControl()
+                     .GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier)))
+            if (rule.IdentityReference == others) return true;
+        return false;
+    }
+
+    string open = OpenFolder(), linked = OpenFolder(), target = Path.Combine(Path.GetTempPath(), "tv-linktarget-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        string world = Path.Combine(open, "Instances", "a", "world.dat");
+        Check(OthersCanReach(world), "Test setup: folder isn't open to other accounts.");
+        GameFolders.Secure(open, null);
+        Check(new DirectoryInfo(open).GetAccessControl().AreAccessRulesProtected, "Open game folder wasn't made private.");
+        Check(!OthersCanReach(world), "Other accounts can still change files inside a repaired game folder.");
+        Check(File.ReadAllText(world) == "keep", "Repairing the game folder lost the player's files.");
+        GameFolders.Secure(open, null); // already private: nothing to do
+
+        Directory.CreateDirectory(target);
+        using (var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                   $"/d /c mklink /J \"{Path.Combine(linked, "Instances", "link")}\" \"{target}\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true })!)
+            mklink.WaitForExit();
+        Check(Directory.Exists(Path.Combine(linked, "Instances", "link")), "Test setup: junction wasn't created.");
+        try { GameFolders.Secure(linked, null); throw new Exception("Game folder with a link inside was repaired."); }
+        catch (UserVisibleException) { }
+        Check(!new DirectoryInfo(linked).GetAccessControl().AreAccessRulesProtected, "Game folder with a link inside was changed.");
+    }
+    finally
+    {
+        try { Directory.Delete(Path.Combine(linked, "Instances", "link")); } catch (IOException) { }
+        foreach (string dir in new[] { open, linked, target }) try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+    }
 }
 
 static Task PackTests()
@@ -830,6 +886,64 @@ static async Task ProbeFixture(string directory)
     await app.StopAsync();
 }
 
+static async Task ModrinthTests()
+{
+    byte[] jar = "not really a jar, but hashed like one"u8.ToArray();
+    string sha512 = Convert.ToHexString(SHA512.HashData(jar)).ToLowerInvariant();
+    string File(string name, string url = "https://cdn.modrinth.com/data/x/", string? hash = null) =>
+        $"{{\"filename\":\"{name}\",\"url\":\"{url}{name}\",\"primary\":true,\"size\":{jar.Length},\"hashes\":{{\"sha512\":\"{hash ?? sha512}\"}}}}";
+    string Version(string type, string file, string dependencies = "") =>
+        $"{{\"version_type\":\"{type}\",\"game_versions\":[\"1.21.1\"],\"loaders\":[\"fabric\"],\"files\":[{file}],\"dependencies\":[{dependencies}]}}";
+    var api = new MockModrinth(jar)
+    {
+        ["search"] = """{"hits":[{"project_id":"AAAA1111","slug":"sodium","title":"Sodium","description":"fast\u0007 and\n small","author":"x","downloads":5,"icon_url":"https://evil.example/i.png"},{"project_id":"../x","title":"bad"}]}""",
+        ["project/AAAA1111/version"] = $"[{Version("beta", File("sodium-beta.jar"))},{Version("release", File("sodium.jar"),
+            """{"project_id":"BBBB2222","dependency_type":"required"},{"project_id":"CCCC3333","dependency_type":"optional"}""")}]",
+        ["project/BBBB2222/version"] = $"[{Version("release", File("fabric-api.jar"))}]",
+        ["project/AAAA1111"] = """{"title":"Sodium","slug":"sodium"}""",
+        ["project/BBBB2222"] = """{"title":"Fabric API","slug":"fabric-api"}""",
+        ["project/DDDD4444/version"] = $"[{Version("release", File("evil.jar", "https://evil.example/"))}]",
+        ["project/EEEE5555/version"] = $"[{Version("release", File("short.jar", hash: "abc"))}]",
+        ["project/FFFF6666/version"] = $"[{Version("release", File("notes.txt"))}]",
+    };
+    using var http = new HttpClient(api);
+    var client = new ModrinthClient(http);
+    var none = new HashSet<string>();
+
+    var hits = await client.SearchAsync("sodium", "1.21.1", "fabric", default);
+    Check(hits.Count == 1 && hits[0].ProjectId == "AAAA1111" && hits[0].Slug == "sodium", "Search results not parsed, or an unsafe project id was kept.");
+    Check(hits[0].Icon is null, "Icon from outside Modrinth's CDN was kept.");
+    Check(hits[0].Description == "fast and small", "Control characters or line breaks reached the window.");
+    Check(api.Requests.Any(r => r.Contains("versions%3A1.21.1") && r.Contains("categories%3Afabric")), "Search wasn't narrowed to the instance's version and loader.");
+    Check((await client.SearchAsync("x", "1.21.1", "vanilla", default)).Count == 0, "Vanilla instances searched for mods.");
+
+    var files = await client.ResolveAsync("AAAA1111", "1.21.1", "fabric", none, none, default);
+    Check(files.Select(f => f.FileName).SequenceEqual(["sodium.jar", "fabric-api.jar"]), "Expected the release (not the newer beta) plus its required dependency only.");
+    files = await client.ResolveAsync("AAAA1111", "1.21.1", "fabric", none, new HashSet<string>(["fabric-api"]), default);
+    Check(files.Count == 1, "A dependency already in the mods folder (by mod id) was downloaded again.");
+    files = await client.ResolveAsync("AAAA1111", "1.21.1", "fabric", new HashSet<string>(["BBBB2222"]), none, default);
+    Check(files.Count == 1, "A dependency already installed from Modrinth was downloaded again.");
+    foreach (string bad in new[] { "DDDD4444", "EEEE5555", "FFFF6666" })
+        try { await client.ResolveAsync(bad, "1.21.1", "fabric", none, none, default); throw new Exception("Accepted a file that isn't a checksummed .jar from Modrinth's CDN: " + bad); }
+        catch (UserVisibleException) { }
+
+    var instance = new Instance { Name = "modrinth-test", MinecraftVersion = "1.21.1" };
+    InstanceStore.CreateFolder(instance);
+    try
+    {
+        var importer = new PackImporter(http);
+        var sodium = (await client.ResolveAsync("AAAA1111", "1.21.1", "fabric", none, none, default))[0];
+        await importer.InstallModAsync(instance, sodium, default);
+        Check(System.IO.File.ReadAllBytes(Path.Combine(instance.ModsDirectory, "sodium.jar")).SequenceEqual(jar), "Installed mod differs from the download.");
+        Check(instance.ModrinthProjects().SetEquals(["AAAA1111"]), "Installed mod wasn't recorded as coming from Modrinth.");
+        try { await importer.InstallModAsync(instance, sodium with { FileName = "tampered.jar", Sha512 = new string('0', 128) }, default); throw new Exception("A download with the wrong checksum was installed."); }
+        catch (UserVisibleException) { }
+        Check(!System.IO.File.Exists(Path.Combine(instance.ModsDirectory, "tampered.jar")), "A file that failed its checksum was left in the mods folder.");
+        try { await importer.InstallModAsync(instance, sodium with { Url = new Uri("https://evil.example/sodium.jar") }, default); throw new Exception("Installed from outside Modrinth's CDN."); }
+        catch (UserVisibleException) { }
+    }
+    finally { InstanceStore.DeleteFolder(instance); }
+}
 sealed class MockApi : HttpMessageHandler
 {
     public int Calls;
@@ -873,6 +987,23 @@ sealed class MockGitHub(Func<byte[]> release, Dictionary<string, byte[]> files) 
         }
         if (url.Host.EndsWith(".githubusercontent.com") && files.TryGetValue(url.Segments[^1], out var data))
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(data) });
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+    }
+}
+
+// Answers Modrinth API paths from a table (query strings ignored) and serves one file from cdn.modrinth.com.
+sealed class MockModrinth(byte[] file) : HttpMessageHandler
+{
+    private readonly Dictionary<string, string> routes = [];
+    public List<string> Requests { get; } = [];
+    public string this[string path] { set => routes[path] = value; }
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var url = request.RequestUri!;
+        Requests.Add(url.AbsoluteUri);
+        if (url.Host == "cdn.modrinth.com") return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(file) });
+        if (url.Host == "api.modrinth.com" && routes.TryGetValue(url.AbsolutePath["/v2/".Length..], out var json))
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
         return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
     }
 }

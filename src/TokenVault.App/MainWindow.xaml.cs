@@ -31,14 +31,38 @@ public partial class MainWindow : Window
     private Telemetry telemetry = new(new System.Net.Http.HttpClient(), () => false, "", "", "");
     private UpdateInfo? update;
     private bool updateInstalled;
+    private bool launching;
+    private bool toastFading;
+    private readonly System.Windows.Threading.DispatcherTimer toastTimer = new() { Interval = TimeSpan.FromSeconds(4) };
+    private readonly System.Windows.Threading.DispatcherTimer searchTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
+    private System.Net.Http.HttpClient? modrinthHttp;
+    private CancellationTokenSource? search;
+    private List<ModRow> installedMods = [];
+    private System.Windows.Media.Animation.Storyboard? pulse;
 
     public MainWindow()
     {
         InitializeComponent();
-        SourceInitialized += (_, _) => App.MatchTitleBar(this);
+        // Never open larger than the screen (small laptops, 1024x768): the title bar and window buttons must stay reachable.
+        var area = SystemParameters.WorkArea;
+        MinWidth = Math.Min(MinWidth, area.Width);
+        MinHeight = Math.Min(MinHeight, area.Height);
+        Width = Math.Min(Width, area.Width);
+        Height = Math.Min(Height, area.Height);
+        SourceInitialized += (_, _) => { App.MatchTitleBar(this); App.RoundCorners(this); };
+        StateChanged += (_, _) => FitMaximized();
+        toastTimer.Tick += (_, _) => { toastTimer.Stop(); if (ProgressArea.Visibility != Visibility.Visible) HideToast(fade: true); };
         Loaded += (_, _) => Initialize();
         Closing += OnClosing;
-        PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape && Overlay.Visibility == Visibility.Visible) { DialogSecondary_Click(this, e); e.Handled = true; } };
+        PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key != Key.Escape) return;
+            if (Overlay.Visibility == Visibility.Visible) DialogSecondary_Click(this, e);
+            else if (Drawer.Visibility == Visibility.Visible) CloseDrawer();
+            else return;
+            e.Handled = true;
+        };
+        searchTimer.Tick += (_, _) => { searchTimer.Stop(); _ = SearchModrinthAsync(); };
         DragOver += (_, e) => { e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) && !busy ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; };
         Drop += async (_, e) => { if (e.Data.GetData(DataFormats.FileDrop) is string[] files) await ImportAsync(files); };
         ServerAddress.TextChanged += (_, _) => ServerHint.Visibility = ServerAddress.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -77,13 +101,13 @@ public partial class MainWindow : Window
         RefreshSecurity();
         RefreshAccount();
         SetBusy(false);
-        Status("Ready");
+        if (!settings.OnboardingCompleted) ShowOnboarding();
         _ = AfterStartAsync();
     }
 
     private async Task AfterStartAsync()
     {
-        if (settings.ShareUsageStatistics is null && telemetry.Configured)
+        if (settings.OnboardingCompleted && settings.ShareUsageStatistics is null && telemetry.Configured)
         {
             bool share = await AskAsync("Help improve Token Vault?",
                 "Token Vault can send anonymous usage statistics: which features are used, which Minecraft versions and loaders, and whether launches and joins work.\n\n" +
@@ -107,25 +131,22 @@ public partial class MainWindow : Window
         }
     }
 
-    // ===================== Navigation =====================
-
-    private void Nav_Checked(object sender, RoutedEventArgs e)
-    {
-        if (!IsInitialized) return;
-        LibraryPage.Visibility = NavLibrary.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
-        ServersPage.Visibility = NavServers.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
-        SecurityPage.Visibility = NavSecurity.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
-        SettingsPage.Visibility = NavSettings.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
-        if (NavSettings.IsChecked == true) LoadSettingsPage();
-        if (NavSecurity.IsChecked == true) { unseenBlocks = 0; RefreshSecurity(); }
-    }
+    // ===================== Tabs =====================
 
     private void Tab_Checked(object sender, RoutedEventArgs e)
     {
         if (!IsInitialized) return;
-        bool mods = TabMods.IsChecked == true;
-        ModsView.Visibility = mods ? Visibility.Visible : Visibility.Collapsed;
-        ActivityLog.Visibility = mods ? Visibility.Collapsed : Visibility.Visible;
+        ModsView.Visibility = TabMods.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        FindView.Visibility = TabFind.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        ServersView.Visibility = TabServers.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        ActivityLog.Visibility = TabLog.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        if (TabFind.IsChecked == true && ModrinthList.ItemsSource is null && search is null) _ = SearchModrinthAsync();
+    }
+
+    private void FindMods_Click(object sender, RoutedEventArgs e)
+    {
+        TabFind.IsChecked = true;
+        ModSearch.Focus();
     }
 
     // ===================== Play =====================
@@ -140,13 +161,19 @@ public partial class MainWindow : Window
         SetBusy(true);
         SetPlayButton(stop: true);
         HideBanner();
+        launching = true;
+        LaunchStep(0, "Getting ready", "Checking that everything is in place.", null);
         try
         {
-            if (sandbox.IsSetUp() == false && !await ApproveSetupAsync()) { Status("Play needs the one-time approval."); return; }
+            if (sandbox.IsSetUp() == false && !await ApproveSetupAsync()) { ShowToast("Playing needs the one-time sandbox setup."); return; }
 
             // Everything slow runs off the UI thread so the window stays responsive.
-            var progress = new Progress<InstallProgress>(p => Status(p.Stage, p.Fraction));
-            Status("Checking game files…", 0);
+            var progress = new Progress<InstallProgress>(p =>
+            {
+                string[] part = p.Stage.Split(" — ", 2);
+                LaunchStep(0, part[0].TrimEnd('…'), part.Length > 1 ? part[1] : "This only happens the first time, or after an update.", p.Fraction is > 0 and < 1 ? p.Fraction : null);
+            });
+            LaunchStep(0, "Checking game files", $"Minecraft {instance.MinecraftVersion}, {GameInstaller.LoaderName(instance.Loader)}", null);
             using var http = GameInstaller.CreateHttp();
             var target = instance.Apply(settings);
             var box = sandbox;
@@ -157,7 +184,9 @@ public partial class MainWindow : Window
                 InstanceStore.Save(instances);
             }
 
+            LaunchStep(1, "Signing in", "Using your saved Microsoft sign-in.", null);
             var account = await EnsureSignedInAsync(cts.Token);
+            LaunchStep(2, "Starting Minecraft", $"Starting the game in the sandbox as {account.Profile.Name}.", null);
             InstanceStore.CreateFolder(instance);
             var launch = instance.Apply(settings, installed);
             string clientJar = Path.Combine(launch.MinecraftDirectory, "versions", launch.MinecraftVersion, launch.MinecraftVersion + ".jar");
@@ -166,26 +195,27 @@ public partial class MainWindow : Window
             var origin = new ConnectionOrigin();
             await using var session = await Task.Run(() => VaultSession.StartAsync(launch, account, AppPaths.AuditLog, cts.Token, Observe, ApproveJoinAsync, origin));
             liveSession = session;
-            Status($"Starting {instance.Name}…", tone: "Accent");
             var game = sandbox;
             var started = DateTime.UtcNow;
             telemetry.Track("game_launched", new Dictionary<string, string> { ["minecraft_version"] = instance.MinecraftVersion, ["loader"] = instance.Loader });
             int code = await Task.Run(() => JavaLauncher.LaunchAsync(launch, session.Descriptor, game, line =>
             {
                 Log(line);
-                if (line.StartsWith("Starting Minecraft", StringComparison.Ordinal)) Status($"Playing {instance.Name} as {account.Profile.Name}", tone: "Accent");
+                if (line.StartsWith("Starting Minecraft", StringComparison.Ordinal))
+                    Dispatcher.BeginInvoke(() => LaunchPlaying(instance.Name, account.Profile.Name));
             }, cts.Token, process => origin.Allow((client, server) => LoopbackPeers.OwnerOf(client, server) is int pid && process.Contains(pid))));
             telemetry.Track("game_exited", new Dictionary<string, string>
             {
                 ["result"] = code == 0 ? "ok" : "error", ["minutes"] = ((int)(DateTime.UtcNow - started).TotalMinutes).ToString(System.Globalization.CultureInfo.InvariantCulture)
             });
-            if (code == 0) Status("Ready");
-            else Error($"Minecraft closed unexpectedly (exit code {code}). Its log is in the instance folder under logs\\latest.log.");
+            if (code != 0) Error($"Minecraft closed unexpectedly (exit code {code}). Its log is in the instance folder under logs\\latest.log.");
         }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested) { Status("Game stopped"); }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested) { ShowToast("Game stopped"); }
         catch (Exception ex) { Error(ex); }
         finally
         {
+            launching = false;
+            HideLaunch();
             running = null;
             liveSession = null;
             ConnectionBar.Visibility = Visibility.Collapsed;
@@ -198,10 +228,71 @@ public partial class MainWindow : Window
         }
     }
 
+    // ----- Launch progress card -----
+
+    // step: 0 game files, 1 sign-in, 2 start. fraction: null shows a pulsing bar (working, length unknown).
+    private void LaunchStep(int step, string title, string detail, double? fraction)
+    {
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => LaunchStep(step, title, detail, fraction)); return; }
+        if (!launching) return;
+        LaunchPanel.Visibility = Visibility.Visible;
+        var dots = new[] { (Step0Dot, Step0Glyph, Step0Label), (Step1Dot, Step1Glyph, Step1Label), (Step2Dot, Step2Glyph, Step2Label) };
+        for (int i = 0; i < dots.Length; i++)
+        {
+            var (dot, glyph, label) = dots[i];
+            bool done = i < step, current = i == step;
+            dot.Background = done ? Brush("Accent") : Brushes.Transparent;
+            dot.BorderBrush = done || current ? Brush("Accent") : Brush("LineStrong");
+            glyph.Text = done ? "\uE73E" : (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            glyph.FontFamily = done ? (FontFamily)FindResource("IconFont") : (FontFamily)FindResource("UiFont");
+            glyph.Foreground = done ? Brush("OnAccent") : current ? Brush("Accent") : Brush("Tertiary");
+            label.Foreground = done || current ? Brush("Text") : Brush("Tertiary");
+            label.FontWeight = current ? FontWeights.SemiBold : FontWeights.Normal;
+        }
+        LaunchTitle.Text = title;
+        LaunchDetail.Text = detail;
+        LaunchProgress.Visibility = Visibility.Visible;
+        if (fraction is double f) { StopPulse(); LaunchProgress.Value = Math.Clamp(f, 0, 1); }
+        else StartPulse();
+    }
+
+    private void LaunchPlaying(string instanceName, string player)
+    {
+        if (!launching) return;
+        LaunchStep(3, "Playing " + instanceName, $"Minecraft is running in the sandbox as {player}. Close the game or press Stop to end it.", 1);
+        LaunchProgress.Visibility = Visibility.Collapsed;
+    }
+
+    private void HideLaunch()
+    {
+        StopPulse();
+        LaunchPanel.Visibility = Visibility.Collapsed;
+    }
+
+    private void StartPulse()
+    {
+        LaunchProgress.Value = 1;
+        if (pulse is not null) return;
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0.25, TimeSpan.FromMilliseconds(900)) { AutoReverse = true, RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever };
+        System.Windows.Media.Animation.Storyboard.SetTarget(fade, LaunchProgress);
+        System.Windows.Media.Animation.Storyboard.SetTargetProperty(fade, new PropertyPath(OpacityProperty));
+        pulse = new System.Windows.Media.Animation.Storyboard();
+        pulse.Children.Add(fade);
+        pulse.Begin(this, true);
+    }
+
+    private void StopPulse()
+    {
+        pulse?.Stop(this);
+        pulse = null;
+        LaunchProgress.Opacity = 1;
+    }
+
     private void SetPlayButton(bool stop)
     {
         PlayButton.Style = (Style)FindResource(stop ? typeof(Button) : "Primary");
         PlayLabel.Text = stop ? "Stop" : "Play";
+        System.Windows.Automation.AutomationProperties.SetName(PlayButton, PlayLabel.Text);
         PlayIcon.Text = stop ? "\uE71A" : "\uE768";
         PlayButton.IsEnabled = stop || (!busy && sandbox is not null);
     }
@@ -222,6 +313,131 @@ public partial class MainWindow : Window
         return ok;
     }
 
+    // ===================== Window =====================
+
+    private void Minimize_Click(object sender, RoutedEventArgs e) => SystemCommands.MinimizeWindow(this);
+    private void Maximize_Click(object sender, RoutedEventArgs e)
+    {
+        if (WindowState == WindowState.Maximized) SystemCommands.RestoreWindow(this);
+        else SystemCommands.MaximizeWindow(this);
+    }
+    private void Close_Click(object sender, RoutedEventArgs e) => SystemCommands.CloseWindow(this);
+
+    // A maximised window without a system frame reaches past the screen edges by the resize border; pad it back in.
+    private void FitMaximized()
+    {
+        bool max = WindowState == WindowState.Maximized;
+        var frame = SystemParameters.WindowResizeBorderThickness;
+        Root.Margin = max ? new Thickness(frame.Left + 4, frame.Top + 4, frame.Right + 4, frame.Bottom + 4) : new Thickness(0);
+        MaximizeButton.Content = max ? "\uE923" : "\uE922";
+        MaximizeButton.ToolTip = max ? "Restore" : "Maximize";
+    }
+
+    // ===================== First run =====================
+
+    private void ShowOnboarding()
+    {
+        Onboarding.Visibility = Visibility.Visible;
+        SettingsButton.Visibility = Visibility.Collapsed;
+        StatisticsCard.Visibility = telemetry.Configured ? Visibility.Visible : Visibility.Collapsed;
+        OnboardingStatistics.IsChecked = settings.ShareUsageStatistics == true;
+        if (sandbox?.IsSetUp() == true) MarkSandboxDone();
+        if (identity is { } signedIn) MarkSignedIn(signedIn.Profile.Name);
+        else if (File.Exists(AppPaths.RefreshCache)) { ShowSignInResult("Already done: a sign-in is saved on this PC.", good: true); OnboardingSignInButton.Visibility = Visibility.Collapsed; }
+    }
+
+    private void MarkSandboxDone()
+    {
+        ShowSandboxResult("Done. The sandbox is ready.", good: true);
+        OnboardingSandboxButton.Visibility = Visibility.Collapsed;
+    }
+
+    private void MarkSignedIn(string name)
+    {
+        ShowSignInResult($"Signed in as {name}.", good: true);
+        OnboardingSignInButton.Visibility = Visibility.Collapsed;
+    }
+
+    private async void OnboardingSandbox_Click(object sender, RoutedEventArgs e)
+    {
+        if (sandbox is null) { ShowSandboxResult("Windows couldn't create the sandbox on this PC, so the game can't start. You can still look around.", good: false); return; }
+        bool ok;
+        OnboardingSandboxButton.IsEnabled = false;
+        try { ok = await sandbox.RequestSetupAsync(); }
+        catch (Exception ex) { ShowSandboxResult(Describe(ex), good: false); return; }
+        finally { OnboardingSandboxButton.IsEnabled = true; }
+        Log(ok ? "Sandbox setup approved." : "Sandbox setup was not approved.");
+        if (!ok) { ShowSandboxResult("Windows didn't give its OK. You can try again here or later under the gear.", good: false); return; }
+        MarkSandboxDone();
+        RefreshSecurity();
+    }
+
+    private void ShowSandboxResult(string text, bool good)
+    {
+        SandboxResult.Text = text;
+        SandboxResult.Foreground = Brush(good ? "Good" : "Bad");
+        SandboxResult.Visibility = Visibility.Visible;
+    }
+
+    private void ShowSignInResult(string text, bool good)
+    {
+        SignInResult.Text = text;
+        SignInResult.Foreground = Brush(good ? "Good" : "Bad");
+        SignInResult.Visibility = Visibility.Visible;
+    }
+
+    private void OnboardingCode_Click(object sender, RoutedEventArgs e)
+    {
+        settings.UseDeviceCode = true;
+        TrySaveSettings();
+        OnboardingSignIn_Click(sender, e);
+    }
+
+    private async void OnboardingSignIn_Click(object sender, RoutedEventArgs e)
+    {
+        if (busy) return;
+        SetBusy(true);
+        OnboardingSignInButton.IsEnabled = false;
+        ShowSignInResult(settings.UseDeviceCode ? "Getting a sign-in code from Microsoft…" : "Finish signing in in your browser…", good: true);
+        try { MarkSignedIn((await EnsureSignedInAsync(CancellationToken.None)).Profile.Name); }
+        catch (OperationCanceledException) { ShowSignInResult("Sign-in was canceled.", good: false); }
+        catch (Exception ex) { ShowSignInResult(Describe(ex), good: false); }
+        finally { OnboardingSignInButton.IsEnabled = true; SetBusy(false); RefreshAccount(); }
+    }
+
+    private void OnboardingFinish_Click(object sender, RoutedEventArgs e)
+    {
+        if (telemetry.Configured)
+        {
+            bool share = OnboardingStatistics.IsChecked == true;
+            if (share && settings.ShareUsageStatistics != true) { settings.ShareUsageStatistics = true; telemetry.Track("consent_given"); }
+            else settings.ShareUsageStatistics = share;
+        }
+        settings.OnboardingCompleted = true;
+        TrySaveSettings();
+        Onboarding.Visibility = Visibility.Collapsed;
+        SettingsButton.Visibility = Visibility.Visible;
+        RefreshSecurity();
+        RefreshAccount();
+    }
+
+    // ===================== Settings drawer =====================
+
+
+    private void Drawer_Open(object sender, RoutedEventArgs e)
+    {
+        LoadSettingsPage();
+        unseenBlocks = 0;
+        RefreshSecurity();
+        if (Drawer.Visibility == Visibility.Visible) return;
+        Drawer.Visibility = Visibility.Visible;
+        DrawerSlide.BeginAnimation(TranslateTransform.XProperty, new System.Windows.Media.Animation.DoubleAnimation(DrawerPanel.Width, 0, TimeSpan.FromMilliseconds(180))
+            { EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } });
+    }
+
+    private void Drawer_Close(object sender, RoutedEventArgs e) => CloseDrawer();
+    private void Drawer_Scrim(object sender, MouseButtonEventArgs e) => CloseDrawer();
+    private void CloseDrawer() => Drawer.Visibility = Visibility.Collapsed;
     // ===================== Account =====================
 
     private async Task<MinecraftIdentity> EnsureSignedInAsync(CancellationToken ct)
@@ -286,14 +502,14 @@ public partial class MainWindow : Window
         bool saved = File.Exists(AppPaths.RefreshCache);
         string? name = identity?.Profile.Name;
         AccountName.Text = name ?? (saved ? "Saved account" : "Not signed in");
-        AccountDetail.Text = name is not null ? "Signed in" : saved ? "Signs in when you play" : "Microsoft account";
+        AccountDetail.Text = name is not null ? "Playing as this account" : saved ? "Signs in when you press Play" : "Asks when you first press Play";
         AccountTile.Background = name is null ? Brush("Selected") : Tiles.For(name);
         AccountInitial.Text = name is null ? "\uE77B" : name[..1].ToUpperInvariant();
         AccountInitial.FontFamily = name is null ? (FontFamily)FindResource("IconFont") : (FontFamily)FindResource("UiFont");
         AccountInitial.Foreground = name is null ? Brush("Secondary") : Brushes.White;
         SignInButton.Visibility = name is null ? Visibility.Visible : Visibility.Collapsed;
         SignOutButton.Visibility = name is not null || saved ? Visibility.Visible : Visibility.Collapsed;
-        SignOutButton.Margin = new Thickness(SignInButton.Visibility == Visibility.Visible ? 14 : 0, 0, 0, 0);
+        SignOutButton.Margin = new Thickness(SignInButton.Visibility == Visibility.Visible ? 8 : 0, 0, 0, 0);
         if (IsLoaded) RefreshSecurity();
     }
 
@@ -314,6 +530,11 @@ public partial class MainWindow : Window
         {
             settings.SelectedInstance = instance.Id;
             TrySaveSettings();
+            // Results were for the other instance's version and loader.
+            ModFilter.Text = "";
+            ModSearch.Text = "";
+            ModrinthList.ItemsSource = null;
+            if (FindView.Visibility == Visibility.Visible) _ = SearchModrinthAsync();
         }
         RefreshInstance();
     }
@@ -322,24 +543,166 @@ public partial class MainWindow : Window
     {
         if (Selected is not { } instance) return;
         InstanceTitle.Text = instance.Name;
-        InstanceInitial.Text = Tiles.Initial(instance.Name);
-        InstanceTile.Background = Tiles.For(instance.Name);
         MissingPanel.Visibility = instance.Missing.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        MissingTitle.Text = instance.Missing.Count == 1 ? "1 file needs to be downloaded by hand" : $"{instance.Missing.Count} files need to be downloaded by hand";
+        MissingTitle.Text = instance.Missing.Count == 1 ? "1 file needs downloading by hand" : $"{instance.Missing.Count} files need downloading by hand";
         MissingList.ItemsSource = instance.Missing;
 
         int version = ++modsVersion;
         var mods = await Task.Run(() => ModInfo.List(instance.ModsDirectory));
         if (version != modsVersion) return; // a newer selection won
-        ModList.ItemsSource = mods.Select(m => new ModRow(m, Path.Combine(instance.ModsDirectory, m.File))).ToList();
-        ModsEmpty.Visibility = mods.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        installedMods = mods.Select(m => new ModRow(m, Path.Combine(instance.ModsDirectory, m.File))).ToList();
         ModCount.Text = mods.Count == 0 ? "" : "  " + mods.Count;
-        InstanceFacts.ItemsSource = new[]
-        {
-            "Minecraft " + instance.MinecraftVersion,
+        InstanceFacts.Text = string.Join("   /   ", "Minecraft " + instance.MinecraftVersion,
             instance.Loader == "vanilla" ? "Vanilla" : GameInstaller.LoaderName(instance.Loader) + " " + (instance.LoaderVersion ?? "(newest)"),
-            mods.Count == 1 ? "1 mod" : $"{mods.Count} mods"
-        };
+            mods.Count switch { 0 => "no mods", 1 => "1 mod", _ => $"{mods.Count} mods" });
+        ShowInstalledMods();
+        if (ModrinthList.ItemsSource is IEnumerable<ModrinthRow> rows)
+        {
+            foreach (var row in rows) if (row.State != ModrinthRow.Busy) row.State = IsInstalled(instance, row.Hit) ? ModrinthRow.Installed : ModrinthRow.Idle;
+        }
+    }
+
+    // Installed mods, narrowed to the search text when there is one.
+    private void ShowInstalledMods()
+    {
+        string query = ModFilter.Text.Trim();
+        var shown = query.Length == 0 ? installedMods
+            : installedMods.Where(m => m.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || m.Mod.File.Contains(query, StringComparison.OrdinalIgnoreCase)).ToList();
+        ModList.ItemsSource = shown;
+        bool vanilla = Selected?.Loader == "vanilla";
+        ModsEmpty.Visibility = shown.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        ModsEmptyTitle.Text = vanilla ? "Vanilla doesn't do mods." : query.Length > 0 ? $"Nothing installed matches \"{query}\"." : "No mods yet. Vanilla is a flavour too.";
+        ModsEmptyDetail.Text = vanilla ? "Make a Fabric, Quilt, Forge or NeoForge instance (New instance, on the left), then come back."
+            : query.Length > 0 ? "Press Find mods to look for it on Modrinth."
+            : "Press Find mods to browse Modrinth, or drop .jar files and modpacks anywhere on this window.";
+    }
+
+    // ===================== Modrinth =====================
+
+    private System.Net.Http.HttpClient ModrinthHttp() =>
+        modrinthHttp ??= ModrinthClient.CreateHttp($"TokenVault/{BuildInfo.Version} (+https://github.com/{BuildInfo.UpdateRepository})");
+
+    private void ModFilter_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        ModFilterHint.Visibility = ModFilter.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        ShowInstalledMods();
+    }
+
+    private void ModSearch_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        ModSearchHint.Visibility = ModSearch.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        searchTimer.Stop();
+        if (IsLoaded && FindView.Visibility == Visibility.Visible) searchTimer.Start(); // empty text: back to the popular list
+    }
+
+    private void ModSearch_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter) { searchTimer.Stop(); _ = SearchModrinthAsync(); e.Handled = true; }
+        else if (e.Key == Key.Escape && ModSearch.Text.Length > 0) { ModSearch.Text = ""; e.Handled = true; }
+    }
+
+    private async Task SearchModrinthAsync()
+    {
+        string query = ModSearch.Text.Trim();
+        if (Selected is not { } instance) return;
+        search?.Cancel();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        search = cts;
+        ModrinthHeading.Text = query.Length == 0 ? "Popular on Modrinth" : $"\"{query}\" on Modrinth";
+        ModrinthFor.Text = $"for Minecraft {instance.MinecraftVersion} with {GameInstaller.LoaderName(instance.Loader)}";
+        if (instance.Loader == "vanilla")
+        {
+            ModrinthList.ItemsSource = null;
+            ModrinthStatus.Text = "Vanilla instances don't load mods, so there's nothing to search for.";
+            ModrinthStatus.Visibility = Visibility.Visible;
+            return;
+        }
+        ModrinthStatus.Text = "Looking…";
+        ModrinthStatus.Visibility = Visibility.Visible;
+        try
+        {
+            var client = new ModrinthClient(ModrinthHttp());
+            var hits = await client.SearchAsync(query, instance.MinecraftVersion, instance.Loader, cts.Token);
+            if (search != cts) return; // a newer search started
+            var rows = hits.Select(h => new ModrinthRow(h) { State = IsInstalled(instance, h) ? ModrinthRow.Installed : ModrinthRow.Idle }).ToList();
+            ModrinthList.ItemsSource = rows;
+            ModrinthStatus.Text = query.Length == 0 ? $"Nobody has made mods for Minecraft {instance.MinecraftVersion} with {GameInstaller.LoaderName(instance.Loader)} yet. Bold choice."
+                : $"Modrinth came back empty-handed for \"{query}\". Different spelling, maybe?";
+            ModrinthStatus.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            using var gate = new SemaphoreSlim(6);
+            await Task.WhenAll(rows.Where(r => r.Hit.Icon is not null).Select(async row =>
+            {
+                await gate.WaitAsync(cts.Token);
+                try { if (await client.IconAsync(row.Hit.Icon!, cts.Token) is { } bytes) row.Icon = DecodeIcon(bytes); }
+                catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or TaskCanceledException or OperationCanceledException) { }
+                finally { gate.Release(); }
+            }));
+        }
+        catch (OperationCanceledException) when (search != cts) { }
+        catch (Exception ex) when (search == cts)
+        {
+            ModrinthList.ItemsSource = null;
+            ModrinthStatus.Text = ex is OperationCanceledException ? "Modrinth is taking its time. Press Enter to try again." : Describe(ex);
+            ModrinthStatus.Visibility = Visibility.Visible;
+        }
+        finally { if (search == cts) search = null; }
+    }
+
+    private HashSet<string> InstalledModIds() => installedMods.Select(m => m.Mod.Id).OfType<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    // Installed from Modrinth, or already in the folder under the id Modrinth's slug names (e.g. from a modpack).
+    private bool IsInstalled(Instance instance, ModrinthHit hit) =>
+        instance.ModrinthProjects().Contains(hit.ProjectId) || (hit.Slug.Length > 0 && InstalledModIds().Contains(hit.Slug));
+
+    // Small, bounded, decoded off the network stack; anything odd just leaves the letter tile showing.
+    private static ImageSource? DecodeIcon(byte[] bytes)
+    {
+        try
+        {
+            var image = new System.Windows.Media.Imaging.BitmapImage();
+            image.BeginInit();
+            image.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            image.CreateOptions = System.Windows.Media.Imaging.BitmapCreateOptions.IgnoreColorProfile;
+            image.DecodePixelWidth = 80;
+            image.StreamSource = new MemoryStream(bytes);
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch (Exception ex) when (ex is NotSupportedException or FileFormatException or IOException or ArgumentException or InvalidOperationException) { return null; }
+    }
+
+    private async void InstallMod_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: ModrinthRow row } || Selected is not { } instance || row.State != ModrinthRow.Idle) return;
+        if (running is not null) { Status("Close the game first. Mods can't be swapped mid-flight.", tone: "Warn"); return; }
+        if (busy) return;
+        SetBusy(true);
+        HideBanner();
+        row.State = ModrinthRow.Busy;
+        try
+        {
+            var client = new ModrinthClient(ModrinthHttp());
+            var files = await client.ResolveAsync(row.Hit.ProjectId, instance.MinecraftVersion, instance.Loader, instance.ModrinthProjects(), InstalledModIds(), CancellationToken.None);
+            var importer = new PackImporter(ModrinthHttp());
+            for (int i = 0; i < files.Count; i++)
+            {
+                Status($"Downloading {files[i].Title}…", (double)i / files.Count);
+                await Task.Run(() => importer.InstallModAsync(instance, files[i], CancellationToken.None));
+            }
+            InstanceStore.Save(instances);
+            row.State = ModrinthRow.Installed;
+            Log($"Installed from Modrinth into {instance.Name}: {string.Join(", ", files.Select(f => f.FileName))}.");
+            Status(files.Count switch
+            {
+                0 => $"{row.Hit.Title} was already here",
+                1 => $"Installed {row.Hit.Title}",
+                2 => $"Installed {row.Hit.Title}, plus 1 mod it needs",
+                _ => $"Installed {row.Hit.Title}, plus {files.Count - 1} mods it needs"
+            });
+        }
+        catch (Exception ex) { row.State = ModrinthRow.Idle; InstanceStore.Save(instances); Error(ex); }
+        finally { SetBusy(false); RefreshInstance(); RefreshLibrary(instance.Id); }
     }
 
     private List<string>? releases;
@@ -403,7 +766,7 @@ public partial class MainWindow : Window
         if (busy) { Status("Close the game before importing"); return; }
         SetBusy(true);
         HideBanner();
-        NavLibrary.IsChecked = true;
+        TabMods.IsChecked = true;
         try
         {
             var jars = paths.Where(p => File.Exists(p) && PackImporter.IsModFile(p)).ToList();
@@ -433,7 +796,7 @@ public partial class MainWindow : Window
     private async void Remove_Click(object sender, RoutedEventArgs e)
     {
         if (Selected is not { } instance || busy) return;
-        if (!await AskAsync($"Remove {instance.Name}?", "Its worlds, mods and settings are deleted from this PC. This can't be undone.", "Remove", danger: true))
+        if (!await AskAsync($"Delete {instance.Name}?", "Worlds, mods, settings: all of it, gone from this PC. There's no undo and no respawn.", "Delete", danger: true))
             return;
         try { InstanceStore.DeleteFolder(instance); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Error("Some files are in use. Close the game and try again."); return; }
@@ -449,7 +812,12 @@ public partial class MainWindow : Window
         if (busy || Selected is not { } instance || sender is not Button { Tag: string path } ||
             !SandboxPolicy.IsWithin(path, instance.ModsDirectory)) return;
         if (!await AskAsync($"Remove {Path.GetFileName(path)}?", "The mod file is deleted from this instance.", "Remove", danger: true)) return;
-        try { File.Delete(path); Status("Removed " + Path.GetFileName(path)); }
+        try
+        {
+            File.Delete(path);
+            if (instance.ModrinthFiles.Remove(Path.GetFileName(path))) InstanceStore.Save(instances);
+            Status("Removed " + Path.GetFileName(path));
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Error("That file is in use. Close the game and try again."); }
         RefreshInstance();
     }
@@ -482,6 +850,7 @@ public partial class MainWindow : Window
     {
         ServerList.ItemsSource = settings.Servers.Select(s => new ServerRow(s)).ToList();
         ServersEmpty.Visibility = settings.Servers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        ServerCount.Text = settings.Servers.Count == 0 ? "" : "  " + settings.Servers.Count;
     }
 
     private void AddServer_Click(object sender, RoutedEventArgs e) => AddServer();
@@ -524,8 +893,8 @@ public partial class MainWindow : Window
         NetworkOk.Visibility = network == true ? Visibility.Visible : Visibility.Collapsed;
         NetworkButton.Visibility = network == true || sandbox is null ? Visibility.Collapsed : Visibility.Visible;
         NetworkDetail.Text = sandbox is null ? "Windows couldn't create the sandbox, so Token Vault won't start the game."
-            : network == true ? "Approved: the sandbox can reach Token Vault on this PC and see top-level folder names."
-            : "Needed once: Windows asks an administrator to let the sandbox reach Token Vault on this PC.";
+            : network == true ? "The sandbox can reach Token Vault on this PC and see top-level folder names."
+            : "Needed once before playing: Windows asks an administrator to let the sandbox reach Token Vault.";
         SavedDetail.Text = identity is not null ? $"Signed in as {identity.Profile.Name}. Sign out to remove it from this PC."
             : saved ? $"A sign-in is saved on this PC, encrypted with {RefreshCache.Protection(AppPaths.RefreshCache)}. Sign out to remove it." : "Nothing saved on this PC.";
         ForgetButton.IsEnabled = !busy && (identity is not null || saved);
@@ -535,12 +904,16 @@ public partial class MainWindow : Window
         if (!settings.ConfirmJoins) issues.Add("joins aren't confirmed");
         if (settings.AllowClipboard) issues.Add("the game can read your clipboard");
         bool failed = sandbox is null;
-        SecurityTitle.Text = failed ? "Protection unavailable" : issues.Count == 0 ? "Your account is protected" : "Protected, with exceptions";
-        SecuritySummary.Text = failed ? "Token Vault won't start the game without its sandbox."
-            : issues.Count == 0 ? (network == true ? "Every protection is on." : "Every protection is on. Windows asks for one approval the first time you play.")
-            : "Your sign-in is safe, but " + string.Join(" and ", issues) + ".";
-        SecurityHero.Background = Brush(failed ? "Bad" : issues.Count == 0 ? "Accent" : "Warn");
-        SecurityBadge.Visibility = failed || issues.Count > 0 || unseenBlocks > 0 ? Visibility.Visible : Visibility.Collapsed;
+        SecurityTitle.Text = failed ? "No sandbox, no game" : issues.Count == 0 ? "Vault locked" : "Vault ajar";
+        SecuritySummary.Text = failed ? "Windows couldn't build the sandbox, and Token Vault won't start Minecraft without one."
+            : issues.Count == 0 ? (network == true ? "Every protection is on. Mods get the game, not your account." : "Every protection is on. Windows asks for one approval the first time you play.")
+            : "Your sign-in is still safe, but " + string.Join(" and ", issues) + ".";
+        string tone = failed || unseenBlocks > 0 ? "Bad" : issues.Count == 0 ? "Good" : "Warn";
+        VaultIcon.Foreground = Brush(tone);
+        VaultIcon.Text = tone == "Good" ? "" : ""; // padlock, or a warning sign
+        VaultText.Text = unseenBlocks > 0 ? (unseenBlocks == 1 ? "The vault turned something away" : $"The vault turned {unseenBlocks} things away")
+            : failed ? "No sandbox, so no game" : issues.Count == 0 ? "Your account is in the vault" : "The vault door is ajar";
+        VaultHint.Text = unseenBlocks > 0 ? "Have a look" : issues.Count > 0 && !failed ? char.ToUpperInvariant(issues[0][0]) + issues[0][1..] : "Protection and settings";
         ActivityList.ItemsSource = activity.ToList();
         ActivityEmpty.Visibility = activity.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         ClearActivityButton.Visibility = activity.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
@@ -852,21 +1225,48 @@ public partial class MainWindow : Window
         SignInButton.IsEnabled = idle;
         SignOutButton.IsEnabled = idle;
         ForgetButton.IsEnabled = idle;
-        if (idle) ProgressArea.Visibility = Visibility.Collapsed;
+        if (idle && ProgressArea.Visibility == Visibility.Visible) { ProgressArea.Visibility = Visibility.Collapsed; HideToast(fade: true); }
     }
 
+    // Short confirmations appear as a toast in the corner and fade on their own; while the game is starting, sign-in
+    // messages go to the launch card instead.
     private void Status(string text, double? fraction = null, string? tone = null)
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => Status(text, fraction, tone)); return; }
+        Log(text);
+        if (launching && fraction is null) { LaunchDetail.Text = text; return; }
         StatusText.Text = text;
-        StatusDot.Fill = Brush(tone ?? (busy ? "Accent" : "Good"));
+        StatusDot.Fill = Brush(tone ?? "Good");
         ProgressArea.Visibility = fraction is null ? Visibility.Collapsed : Visibility.Visible;
         if (fraction is double f)
         {
             Progress.Value = Math.Clamp(f, 0, 1);
             ProgressText.Text = $"{Math.Clamp(f, 0, 1):P0}";
         }
-        Log(text);
+        ShowToastPanel();
+        toastTimer.Stop();
+        toastTimer.Start();
+    }
+
+    private void ShowToast(string text) => Status(text);
+
+    private void ShowToastPanel()
+    {
+        var fadeIn = new System.Windows.Media.Animation.DoubleAnimation { To = 1, Duration = TimeSpan.FromMilliseconds(160) };
+        if (Toast.Visibility != Visibility.Visible) fadeIn.From = 0;
+        toastFading = false;
+        Toast.Visibility = Visibility.Visible;
+        Toast.BeginAnimation(OpacityProperty, fadeIn);
+    }
+
+    private void HideToast(bool fade)
+    {
+        if (Toast.Visibility != Visibility.Visible) return;
+        if (!fade) { toastFading = false; Toast.BeginAnimation(OpacityProperty, null); Toast.Visibility = Visibility.Collapsed; return; }
+        toastFading = true;
+        var fadeOut = new System.Windows.Media.Animation.DoubleAnimation { To = 0, Duration = TimeSpan.FromMilliseconds(400) };
+        fadeOut.Completed += (_, _) => { if (toastFading) { toastFading = false; Toast.Visibility = Visibility.Collapsed; } };
+        Toast.BeginAnimation(OpacityProperty, fadeOut);
     }
 
     private void Log(string text)
@@ -890,7 +1290,7 @@ public partial class MainWindow : Window
     {
         BannerText.Text = message;
         Banner.Visibility = Visibility.Visible;
-        Status("Something went wrong", tone: "Bad");
+        HideToast(fade: false);
         Log("Error: " + message);
     }
 
@@ -991,4 +1391,34 @@ public sealed record Limit(string Title, string Detail);
 public sealed record LoaderItem(string Id)
 {
     public override string ToString() => GameInstaller.LoaderName(Id);
+}
+
+// A Modrinth search result. State drives the button: Install, Installing…, Installed.
+public sealed class ModrinthRow(ModrinthHit hit) : System.ComponentModel.INotifyPropertyChanged
+{
+    public const int Idle = 0, Busy = 1, Installed = 2;
+    private int state;
+    private ImageSource? icon;
+
+    public ModrinthHit Hit { get; } = hit;
+    public string Title => Hit.Title;
+    public string Byline => (Hit.Author.Length > 0 ? "   by " + Hit.Author : "") + "   " + Downloads(Hit.Downloads);
+    public string Description => Hit.Description;
+    public string Initial => Tiles.Initial(Hit.Title);
+    public Brush Tile => Tiles.For(Hit.Title);
+    public ImageSource? Icon { get => icon; set { icon = value; Changed(nameof(Icon)); } }
+    public int State { get => state; set { state = value; Changed(nameof(Action)); Changed(nameof(CanInstall)); } }
+    public string Action => state switch { Busy => "Installing…", Installed => "Installed", _ => "Install" };
+    public bool CanInstall => state == Idle;
+
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+    private void Changed(string name) => PropertyChanged?.Invoke(this, new(name));
+
+    private static string Downloads(long n) => n switch
+    {
+        >= 1_000_000 => $"{n / 1_000_000.0:0.#}M downloads",
+        >= 1_000 => $"{n / 1_000.0:0.#}k downloads",
+        1 => "1 download",
+        _ => $"{n} downloads"
+    };
 }

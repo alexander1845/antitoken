@@ -19,10 +19,16 @@ public sealed class Instance
     public string Loader { get; set; } = "fabric";   // vanilla | fabric | quilt | forge | neoforge
     public string? LoaderVersion { get; set; }       // null: newest stable, pinned on first install
     public List<MissingFile> Missing { get; set; } = [];
+    // Mod file name -> Modrinth project id, for files installed from Modrinth search.
+    public Dictionary<string, string> ModrinthFiles { get; set; } = [];
     public DateTimeOffset Created { get; set; } = DateTimeOffset.UtcNow;
 
     [JsonIgnore] public string Directory => Path.Combine(AppPaths.InstanceRoot, Id);
     [JsonIgnore] public string ModsDirectory => Path.Combine(Directory, "mods");
+
+    // Modrinth projects whose files are still in the mods folder.
+    public HashSet<string> ModrinthProjects() =>
+        ModrinthFiles.Where(f => File.Exists(Path.Combine(ModsDirectory, f.Key))).Select(f => f.Value).ToHashSet(StringComparer.Ordinal);
 
     public int CountMods()
     {
@@ -59,6 +65,7 @@ public static class InstanceStore
                 list = JsonSerializer.Deserialize<List<Instance>>(File.ReadAllText(AppPaths.Instances)) ?? [];
         }
         catch (JsonException) { }
+        foreach (var i in list) i.ModrinthFiles ??= [];
         list.RemoveAll(i => !Guid.TryParseExact(i.Id, "N", out _) || i.Name is null || i.Missing is null ||
             !Configuration.IsVersionId(i.MinecraftVersion ?? "") || !TokenVault.Launcher.GameInstaller.Loaders.Contains(i.Loader));
         if (list.Count == 0) list.Add(new Instance { Name = "Fabric " + Configuration.DefaultVersion, Source = "New" });

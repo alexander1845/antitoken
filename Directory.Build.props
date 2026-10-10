@@ -20,11 +20,12 @@
     <!-- GitHub repository whose releases the updater checks. -->
     <TokenVaultUpdateRepository Condition="'$(TokenVaultUpdateRepository)' == ''">alexander1845/antitoken</TokenVaultUpdateRepository>
     <!-- Base64 SubjectPublicKeyInfo of the ECDSA P-256 key that signs release manifests (scripts/New-UpdateSigningKey.ps1).
-         Empty: the updater only tells players a release exists; it never installs anything it can't verify. -->
-    <TokenVaultUpdatePublicKey Condition="'$(TokenVaultUpdatePublicKey)' == ''"></TokenVaultUpdatePublicKey>
+         Empty: the updater only tells players a release exists; it never installs anything it can't verify.
+         The matching private key is the UPDATE_SIGNING_KEY repository secret and must never be committed. -->
+    <TokenVaultUpdatePublicKey Condition="'$(TokenVaultUpdatePublicKey)' == ''">MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMLj+CrKLIQgLKVh1JdmAI0XtdM8QMebdQG8jOId6IOhcZXxpmf2F/oPGsrHIJ6j8w79znMbYoZdhFC6uv6J5AA==</TokenVaultUpdatePublicKey>
     <!-- PostHog PROJECT key (starts with phc_; public by design). Never a personal API key (phx_), which is a secret.
-         Empty: no usage statistics are sent, even if the player opts in. -->
-    <PostHogProjectKey Condition="'$(PostHogProjectKey)' == ''"></PostHogProjectKey>
+         Empty: no usage statistics are sent, even if the player opts in. EU-hosted projects: https://eu.i.posthog.com -->
+    <PostHogProjectKey Condition="'$(PostHogProjectKey)' == ''">phc_v4X9DsCvdVbCHrYuFvFnKupKfwbeeiTLhypyka3j6qF7</PostHogProjectKey>
     <PostHogHost Condition="'$(PostHogHost)' == ''">https://us.i.posthog.com</PostHogHost>
   </PropertyGroup>
   <ItemGroup>

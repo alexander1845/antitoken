@@ -27,6 +27,14 @@ public partial class App : Application
             Shutdown(1);
             return;
         }
+        // Anything unexpected is written to a crash log (no account data: only the exception type and code locations)
+        // and explained to the player, instead of the window just vanishing.
+        DispatcherUnhandledException += (_, args) =>
+        {
+            ReportCrash(args.Exception);
+            args.Handled = true;
+            Shutdown(2);
+        };
         if (IsDarkMode()) ApplyDarkPalette();
         new MainWindow().Show();
     }
@@ -35,6 +43,22 @@ public partial class App : Application
     {
         single?.Dispose();
         base.OnExit(e);
+    }
+
+    private static void ReportCrash(Exception ex)
+    {
+        try
+        {
+            string path = System.IO.Path.Combine(TokenVault.Core.AppPaths.Data, "crash.log");
+            System.IO.Directory.CreateDirectory(TokenVault.Core.AppPaths.Data);
+            var lines = new List<string> { $"{DateTimeOffset.UtcNow:O} Token Vault {TokenVault.Vault.BuildInfo.Version}" };
+            for (var e = ex; e is not null; e = e.InnerException)
+                lines.Add(e.GetType().FullName + (e is System.Windows.Markup.XamlParseException ? ": " + e.Message : "") + Environment.NewLine + e.StackTrace);
+            System.IO.File.AppendAllLines(path, lines);
+        }
+        catch (Exception) { }
+        MessageBox.Show("Token Vault ran into an unexpected problem and has to close. Details were saved to crash.log in its data folder.",
+            "Token Vault", MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
     public static bool IsDarkMode()
@@ -53,6 +77,13 @@ public partial class App : Application
         if (!IsDarkMode()) return;
         int dark = 1;
         _ = DwmSetWindowAttribute(new WindowInteropHelper(window).EnsureHandle(), 20, ref dark, sizeof(int));
+    }
+
+    // Windows 11: round the window's corners like other modern apps (ignored on Windows 10).
+    public static void RoundCorners(Window window)
+    {
+        int round = 2; // DWMWCP_ROUND
+        _ = DwmSetWindowAttribute(new WindowInteropHelper(window).EnsureHandle(), 33, ref round, sizeof(int));
     }
 
     [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);

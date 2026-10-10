@@ -51,7 +51,7 @@ public partial class JoinPrompt : Window
         prompt.timer.Start();
         var registration = ct.Register(() => prompt.Dispatcher.BeginInvoke(() => prompt.Finish(false)));
         prompt.Closed += (_, _) => { registration.Dispose(); prompt.timer.Stop(); prompt.arm.Stop(); prompt.result.TrySetResult(false); };
-        prompt.SourceInitialized += (_, _) => App.MatchTitleBar(prompt);
+        prompt.SourceInitialized += (_, _) => { App.MatchTitleBar(prompt); App.RoundCorners(prompt); };
         prompt.Show();
         prompt.Activate();
         prompt.BlockButton.Focus();
