@@ -352,6 +352,7 @@ static Task SandboxTests()
     catch (UserVisibleException) { }
     SandboxPolicy.CheckWrite(c, Path.Combine(AppPaths.Root, "Instance"), [libraries]);
     Check(SandboxPolicy.IsWithin("C:/a/bc", "C:/a/b") == false && SandboxPolicy.IsWithin("C:/a/b/c", "C:/a/b"), "Prefix confusion in IsWithin.");
+    GameFolderRepairTests();
 
     // Arguments must reach java.exe exactly as given (CommandLineToArgvW rules).
     Check(WindowsCommandLine.Build("C:/j/java.exe", ["-Da=b", "two words", "", "q\"x", @"tail\", @"C:\dir with space\"]) ==
@@ -373,6 +374,60 @@ static Task SandboxTests()
     try { JavaTrustStore.Create([("Dup", cert.RawData)], DateTimeOffset.UnixEpoch); throw new Exception("Uppercase alias accepted."); }
     catch (ArgumentException) { }
     return Task.CompletedTask;
+}
+
+// A game folder an earlier build left open to other accounts is made private in place, keeping its contents; one with a
+// link inside is refused rather than having permissions applied wherever the link points.
+static void GameFolderRepairTests()
+{
+    if (!OperatingSystem.IsWindows()) return;
+    var others = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.AuthenticatedUserSid, null);
+    string OpenFolder()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "tv-gameroot-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(path, "Instances", "a"));
+        File.WriteAllText(Path.Combine(path, "Instances", "a", "world.dat"), "keep");
+        var info = new DirectoryInfo(path);
+        var acl = info.GetAccessControl();
+        acl.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(others, System.Security.AccessControl.FileSystemRights.Modify,
+            System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit,
+            System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow));
+        info.SetAccessControl(acl);
+        return path;
+    }
+    bool OthersCanReach(string path)
+    {
+        foreach (System.Security.AccessControl.FileSystemAccessRule rule in new FileInfo(path).GetAccessControl()
+                     .GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier)))
+            if (rule.IdentityReference == others) return true;
+        return false;
+    }
+
+    string open = OpenFolder(), linked = OpenFolder(), target = Path.Combine(Path.GetTempPath(), "tv-linktarget-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        string world = Path.Combine(open, "Instances", "a", "world.dat");
+        Check(OthersCanReach(world), "Test setup: folder isn't open to other accounts.");
+        GameFolders.Secure(open, null);
+        Check(new DirectoryInfo(open).GetAccessControl().AreAccessRulesProtected, "Open game folder wasn't made private.");
+        Check(!OthersCanReach(world), "Other accounts can still change files inside a repaired game folder.");
+        Check(File.ReadAllText(world) == "keep", "Repairing the game folder lost the player's files.");
+        GameFolders.Secure(open, null); // already private: nothing to do
+
+        Directory.CreateDirectory(target);
+        using (var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                   $"/d /c mklink /J \"{Path.Combine(linked, "Instances", "link")}\" \"{target}\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true })!)
+            mklink.WaitForExit();
+        Check(Directory.Exists(Path.Combine(linked, "Instances", "link")), "Test setup: junction wasn't created.");
+        try { GameFolders.Secure(linked, null); throw new Exception("Game folder with a link inside was repaired."); }
+        catch (UserVisibleException) { }
+        Check(!new DirectoryInfo(linked).GetAccessControl().AreAccessRulesProtected, "Game folder with a link inside was changed.");
+    }
+    finally
+    {
+        try { Directory.Delete(Path.Combine(linked, "Instances", "link")); } catch (IOException) { }
+        foreach (string dir in new[] { open, linked, target }) try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+    }
 }
 
 static Task PackTests()

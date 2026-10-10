@@ -2,6 +2,12 @@
   "version": 1,
   "dependencies": {
     "net8.0-windows7.0": {
+      "Microsoft.NET.ILLink.Tasks": {
+        "type": "Direct",
+        "requested": "[8.0.31, )",
+        "resolved": "8.0.31",
+        "contentHash": "OJdAGATV2QoVWL11zlDLEluA06q8rK+cgZR47ohrO8V+Qj5z9dlvN7bG9/0e5t0IOe+yD8tREC0bpsEgDGrzIQ=="
+      },
       "Microsoft.Identity.Client": {
         "type": "Transitive",
         "resolved": "4.90.1",
@@ -45,15 +51,15 @@
       "tokenvault.launcher": {
         "type": "Project",
         "dependencies": {
-          "TokenVault.Core": "[1.0.0, )"
+          "TokenVault.Core": "[1.1.0, )"
         }
       },
       "tokenvault.packs": {
         "type": "Project",
         "dependencies": {
           "SharpCompress": "[1.0.0, )",
-          "TokenVault.Core": "[1.0.0, )",
-          "TokenVault.Launcher": "[1.0.0, )"
+          "TokenVault.Core": "[1.1.0, )",
+          "TokenVault.Launcher": "[1.1.0, )"
         }
       },
       "tokenvault.vault": {
@@ -61,9 +67,10 @@
         "dependencies": {
           "Microsoft.Identity.Client": "[4.90.1, )",
           "System.Security.Cryptography.ProtectedData": "[8.0.0, )",
-          "TokenVault.Core": "[1.0.0, )"
+          "TokenVault.Core": "[1.1.0, )"
         }
       }
-    }
+    },
+    "net8.0-windows7.0/win-x64": {}
   }
 }

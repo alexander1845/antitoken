@@ -33,15 +33,22 @@ public partial class MainWindow : Window
     private bool updateInstalled;
     private bool launching;
     private int onboardingStep;
+    private bool toastFading;
     private readonly System.Windows.Threading.DispatcherTimer toastTimer = new() { Interval = TimeSpan.FromSeconds(4) };
     private System.Windows.Media.Animation.Storyboard? pulse;
 
     public MainWindow()
     {
         InitializeComponent();
+        // Never open larger than the screen (small laptops, 1024x768): the title bar and window buttons must stay reachable.
+        var area = SystemParameters.WorkArea;
+        MinWidth = Math.Min(MinWidth, area.Width);
+        MinHeight = Math.Min(MinHeight, area.Height);
+        Width = Math.Min(Width, area.Width);
+        Height = Math.Min(Height, area.Height);
         SourceInitialized += (_, _) => { App.MatchTitleBar(this); App.RoundCorners(this); };
         StateChanged += (_, _) => FitMaximized();
-        toastTimer.Tick += (_, _) => { toastTimer.Stop(); if (ProgressArea.Visibility != Visibility.Visible) Toast.Visibility = Visibility.Collapsed; };
+        toastTimer.Tick += (_, _) => { toastTimer.Stop(); if (ProgressArea.Visibility != Visibility.Visible) HideToast(fade: true); };
         Loaded += (_, _) => Initialize();
         Closing += OnClosing;
         PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape && Overlay.Visibility == Visibility.Visible) { DialogSecondary_Click(this, e); e.Handled = true; } };
@@ -1061,7 +1068,7 @@ public partial class MainWindow : Window
         SignInButton.IsEnabled = idle;
         SignOutButton.IsEnabled = idle;
         ForgetButton.IsEnabled = idle;
-        if (idle && ProgressArea.Visibility == Visibility.Visible) { ProgressArea.Visibility = Visibility.Collapsed; Toast.Visibility = Visibility.Collapsed; }
+        if (idle && ProgressArea.Visibility == Visibility.Visible) { ProgressArea.Visibility = Visibility.Collapsed; HideToast(fade: true); }
     }
 
     // Short confirmations appear as a toast in the corner and fade on their own; while the game is starting, sign-in
@@ -1079,12 +1086,31 @@ public partial class MainWindow : Window
             Progress.Value = Math.Clamp(f, 0, 1);
             ProgressText.Text = $"{Math.Clamp(f, 0, 1):P0}";
         }
-        Toast.Visibility = Visibility.Visible;
+        ShowToastPanel();
         toastTimer.Stop();
         toastTimer.Start();
     }
 
     private void ShowToast(string text) => Status(text);
+
+    private void ShowToastPanel()
+    {
+        var fadeIn = new System.Windows.Media.Animation.DoubleAnimation { To = 1, Duration = TimeSpan.FromMilliseconds(160) };
+        if (Toast.Visibility != Visibility.Visible) fadeIn.From = 0;
+        toastFading = false;
+        Toast.Visibility = Visibility.Visible;
+        Toast.BeginAnimation(OpacityProperty, fadeIn);
+    }
+
+    private void HideToast(bool fade)
+    {
+        if (Toast.Visibility != Visibility.Visible) return;
+        if (!fade) { toastFading = false; Toast.BeginAnimation(OpacityProperty, null); Toast.Visibility = Visibility.Collapsed; return; }
+        toastFading = true;
+        var fadeOut = new System.Windows.Media.Animation.DoubleAnimation { To = 0, Duration = TimeSpan.FromMilliseconds(400) };
+        fadeOut.Completed += (_, _) => { if (toastFading) { toastFading = false; Toast.Visibility = Visibility.Collapsed; } };
+        Toast.BeginAnimation(OpacityProperty, fadeOut);
+    }
 
     private void Log(string text)
     {
@@ -1107,7 +1133,7 @@ public partial class MainWindow : Window
     {
         BannerText.Text = message;
         Banner.Visibility = Visibility.Visible;
-        Toast.Visibility = Visibility.Collapsed;
+        HideToast(fade: false);
         Log("Error: " + message);
     }
 
