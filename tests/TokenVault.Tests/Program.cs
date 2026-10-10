@@ -182,6 +182,9 @@ static async Task TokenTests()
     await msal.GetAccountsAsync();
     Check(schemaChecked, "Actual MSAL cache schema was not checked.");
     Check(VaultPolicy.SanitizePath("/exfil/" + a).Contains("[redacted]"), "Fake leaked into audit path.");
+    Check(VaultPolicy.Classify("GET", "/services/privacy/blocklist") == "routine:blocklist" && VaultPolicy.Classify("POST", "/services/events") == "routine:telemetry", "Routine game requests reported as blocked.");
+    Check(!VaultPolicy.IsAllowed(VaultPolicy.DefaultAllowlist, "GET", "/services/privacy/blocklist") && !VaultPolicy.IsAllowed(VaultPolicy.DefaultAllowlist, "POST", "/services/events"), "A routine request was let through.");
+    Check(VaultPolicy.Classify("PUT", "/services/minecraft/profile/name/x").StartsWith("denied:"), "An account change was classed as routine.");
     Check(!InstalledVersion.Allowed(JsonNode.Parse("[{\"action\":\"allow\",\"os\":{\"name\":\"linux\"}}]")), "Wrong OS library accepted.");
 }
 

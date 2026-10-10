@@ -51,10 +51,20 @@ public static class VaultPolicy
         _ => throw new InvalidOperationException("No upstream mapping.")
     };
 
+    // Requests vanilla Minecraft makes on its own (blocklist on start, telemetry, the account screen's profile, a player
+    // report). They are refused like anything else outside the ceiling, but they're expected, so they're not reported
+    // as something the vault had to stop.
+    private static readonly Dictionary<string, string> Routine = new(StringComparer.Ordinal)
+    {
+        ["GET /services/privacy/blocklist"] = "blocklist", ["POST /services/events"] = "telemetry",
+        ["GET /services/minecraft/profile"] = "profile", ["POST /services/player/report"] = "report"
+    };
+
     public static string Classify(string method, string path)
     {
         if (path.EndsWith("/session/minecraft/join", StringComparison.Ordinal)) return "join-always-denied";
         string key = Key(method, path);
+        if (Routine.TryGetValue(key, out string? routine)) return "routine:" + routine;
         return Ceiling.Contains(key) ? key[(key.IndexOf(' ') + 1)..] : "denied:" + SanitizePath(path);
     }
 
