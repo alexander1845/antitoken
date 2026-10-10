@@ -118,23 +118,6 @@ dotnet run --project tests/TokenVault.Tests -c Release
 
 Screenshots in `docs/screenshots` are taken by CI, which runs the real app on Windows and clicks through it.
 
-### Releasing
-
-Push a tag like `v1.2.0`. CI builds that version, runs the tests and publishes a GitHub release.
-
-Releases are signed for the updater with the key whose public half is in `Directory.Build.props`. Keep the private
-key in the `UPDATE_SIGNING_KEY` repository secret and nowhere else; anyone holding it can push code to every
-installed copy. Without the secret, releases still publish, but installed copies only tell people about them.
-
-The PostHog project key in `Directory.Build.props` is a public `phc_` key. Never put a personal `phx_` key there.
-
-To remove SmartScreen's "unknown publisher" warning, add a code-signing certificate as the `SIGNING_CERT_PFX_BASE64`
-and `SIGNING_CERT_PASSWORD` secrets.
-
-Microsoft sign-in uses the public application ID that Prism Launcher publishes, so Microsoft's consent page says
-"Prism Launcher". If you distribute your own build, register your own app (personal accounts, public client,
-redirect `http://127.0.0.1:25597/`, Minecraft API approval) and set it under the gear.
-
 ## More
 
 - [docs/CRYPTOGRAPHY.md](docs/CRYPTOGRAPHY.md): design, threat model and analysis
