@@ -9,17 +9,44 @@ public static class SafeFiles
     public const long MaxPackBytes = 16L * 1024 * 1024 * 1024;
     public const int MaxEntries = 100_000;
 
-    // Sign-in files other launchers keep next to game data. If someone zips up their whole .minecraft or launcher
-    // folder, these must not be copied into a folder the sandbox can read.
+    // Sign-in files that launchers and clients keep next to game data (official launcher, Prism/MultiMC, TLauncher,
+    // Essential, Lunar, Feather, Meteor, Wurst and others). If someone zips up their whole .minecraft or launcher folder,
+    // these must not be copied into a folder the sandbox can read. Names are matched exactly, and any file whose name
+    // mentions accounts, tokens, credentials, passwords or alts is skipped as well: a skipped config file costs a
+    // setting, a copied one can cost the account.
     private static readonly HashSet<string> CredentialFiles = new(StringComparer.OrdinalIgnoreCase)
     {
         "accounts.json", "launcher_accounts.json", "launcher_accounts_microsoft_store.json",
         "launcher_msa_credentials.bin", "launcher_msa_credentials_microsoft_store.bin",
         "launcher_profiles.json", "launcher_profiles_microsoft_store.json", "launcher_ui_state.json",
-        "msa_credentials.bin", "tokens.json", "vault.bin"
+        "msa_credentials.bin", "tokens.json", "vault.bin", "tlauncherprofiles.json", "tlauncher_profiles.json",
+        "microsoft_accounts.json", "accounts.nbt", "alts.json", "alts.encrypted_json", "alts.txt"
+    };
+    private static readonly string[] CredentialWords = ["account", "token", "credential", "password", "passwd", "secret", "msa_", "alts."];
+
+    public static bool IsCredentialFile(string relative)
+    {
+        string name = Path.GetFileName(relative.Replace('\\', '/'));
+        return CredentialFiles.Contains(name) || CredentialWords.Any(w => name.Contains(w, StringComparison.OrdinalIgnoreCase));
+    }
+
+    // What is taken from a player's own game folder (a zipped .minecraft, a Prism/MultiMC export): mods and their
+    // settings, packs and worlds. Everything else there (other launchers' data, caches, logs, versions, libraries) is left out.
+    private static readonly HashSet<string> GameFolders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "mods", "config", "defaultconfigs", "kubejs", "scripts", "resourcepacks", "shaderpacks", "datapacks", "saves",
+        "schematics", "global_packs", "openloader"
+    };
+    private static readonly HashSet<string> GameFiles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "options.txt", "optionsof.txt", "optionsshaders.txt"
     };
 
-    public static bool IsCredentialFile(string relative) => CredentialFiles.Contains(Path.GetFileName(relative.Replace('\\', '/')));
+    public static bool IsGameContent(string relative)
+    {
+        string[] parts = relative.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 1 ? GameFiles.Contains(parts[0]) : parts.Length > 1 && GameFolders.Contains(parts[0]);
+    }
 
     // Resolves a pack-supplied relative path inside root, refusing traversal, device names and links.
     public static string Under(string root, string relative)

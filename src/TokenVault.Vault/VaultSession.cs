@@ -13,25 +13,31 @@ public sealed class VaultSession : IAsyncDisposable
     private readonly X509Certificate2 certificate;
     private readonly HttpClient http;
     private readonly AuditLog log;
+    private readonly BrokerGate gate;
 
     public SessionDescriptor Descriptor { get; }
     public Task Completion => networking;
 
     private VaultSession(CancellationTokenSource lifetime, WebApplication app, Task networking, X509Certificate2 certificate,
-        HttpClient http, AuditLog log, SessionDescriptor descriptor)
+        HttpClient http, AuditLog log, BrokerGate gate, SessionDescriptor descriptor)
     {
         this.lifetime = lifetime; this.app = app; this.networking = networking; this.certificate = certificate;
-        this.http = http; this.log = log; Descriptor = descriptor;
+        this.http = http; this.log = log; this.gate = gate; Descriptor = descriptor;
     }
 
+    // The player's "Disconnect" button: ends the live server connection. False when none is live.
+    public bool DisconnectActive() => gate.DisconnectActive();
+
     // observe receives the same sanitized classifications as the audit log (no tokens, bodies or hashes).
+    // origin: which loopback connections count as the game (null: any, for tests).
+    // After `expires` the fake token stops working and no new server sign-in happens, but a connection that is already
+    // playing keeps going: it holds no token, and cutting it would drop the player mid-game. Everything closes on stop.
     public static async Task<VaultSession> StartAsync(Configuration config, MinecraftIdentity identity, string auditPath, CancellationToken stop,
-        Action<string>? observe = null, JoinApproval? approve = null)
+        Action<string>? observe = null, JoinApproval? approve = null, ConnectionOrigin? origin = null)
     {
         DateTimeOffset expires = new[] { identity.ExpiresAt.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(config.SessionMinutes) }.Min();
         if (expires <= DateTimeOffset.UtcNow) throw new UserVisibleException("Sign-in expires too soon. Sign out and sign in again.");
         var lifetime = CancellationTokenSource.CreateLinkedTokenSource(stop);
-        lifetime.CancelAfter(expires - DateTimeOffset.UtcNow);
         var cert = LocalCertificate.Create();
         var log = new AuditLog(auditPath);
         var http = MinecraftApi.CreateHttp();
@@ -40,24 +46,25 @@ public sealed class VaultSession : IAsyncDisposable
         {
             string fake = FakeToken.Create(identity.Profile, expires);
             void Audit(string message) { log.Write(message); observe?.Invoke(message); }
-            app = new HttpsVault(config, identity, fake, cert, http, Audit).Create();
+            app = new HttpsVault(config, identity, fake, cert, http, Audit, expires).Create();
             await app.StartAsync(lifetime.Token);
             var authenticator = new MojangConnectionAuthenticator(http, identity);
             var servers = new List<LocalServer>();
-            var slot = new SemaphoreSlim(1, 1); // one game connection at a time, across every server
+            var gate = new BrokerGate(); // one game connection at a time, across every server
             var brokers = new List<Task>();
             foreach (var server in config.Servers)
             {
                 var listener = ConnectionBroker.Listen();
                 servers.Add(new LocalServer(server.Name, ((System.Net.IPEndPoint)listener.LocalEndpoint).Port));
-                brokers.Add(new ConnectionBroker(server, identity.Profile, authenticator, Audit, config.ConfirmJoins ? approve : null, slot, config.Protocol)
+                brokers.Add(new ConnectionBroker(server, identity.Profile, authenticator, Audit, config.ConfirmJoins ? approve : null, gate, config.Protocol,
+                    origin, expires)
                     .RunAsync(listener, lifetime.Token));
             }
             Task networking = Task.WhenAll(brokers);
             var descriptor = new SessionDescriptor(identity.Profile, fake, Convert.ToBase64String(cert.Export(X509ContentType.Cert)),
                 config.HttpsPort, servers, config.MinecraftVersion, expires);
             log.Write("session:started");
-            return new VaultSession(lifetime, app, networking, cert, http, log, descriptor);
+            return new VaultSession(lifetime, app, networking, cert, http, log, gate, descriptor);
         }
         catch
         {

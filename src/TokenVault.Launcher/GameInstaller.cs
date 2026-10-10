@@ -191,8 +191,11 @@ public sealed class GameInstaller(HttpClient http)
             string library = node!["name"]!.GetValue<string>();
             var repository = Url(node["url"] ?? JsonValue.Create(defaultRepository));
             string path = InstalledVersion.MavenPath(library);
-            files.Add(new(new Uri(repository, path), Under(root, "libraries/" + path),
-                node["sha1"] is JsonNode sha ? Sha1(sha) : null, Size(node["size"])));
+            var libraryUrl = new Uri(repository, path);
+            // Profiles normally carry each library's SHA-1. When one doesn't, the checksum the Maven repository publishes
+            // next to the file is used; with neither, nothing is installed unchecked.
+            files.Add(new(libraryUrl, Under(root, "libraries/" + path),
+                node["sha1"] is JsonNode sha ? Sha1(sha) : await PublishedSha1Async(libraryUrl, ct), Size(node["size"])));
         }
         Directory.CreateDirectory(Path.GetDirectoryName(profileFile)!);
         await File.WriteAllTextAsync(profileFile, profile.ToJsonString(), ct);
@@ -227,10 +230,8 @@ public sealed class GameInstaller(HttpClient http)
         string artifact = group[(group.LastIndexOf('/') + 1)..];
         string host = c.Loader == "forge" ? "https://maven.minecraftforge.net/" : "https://maven.neoforged.net/releases/";
         var installerUrl = new Uri($"{host}{group}/{version}/{artifact}-{version}-installer.jar");
-        string? sha1 = null;
-        try { sha1 = (await TextAsync(new Uri(installerUrl + ".sha1"), ct)).Trim()[..40].ToLowerInvariant(); } catch (Exception ex) when (ex is UserVisibleException or ArgumentOutOfRangeException) { }
         string installer = Path.Combine(folder, "installer.jar");
-        await DownloadAsync(new(installerUrl, installer, sha1 is not null && Regex.IsMatch(sha1, "^[0-9a-f]{40}$") ? sha1 : null, 0), ct);
+        await DownloadAsync(new(installerUrl, installer, await PublishedSha1Async(installerUrl, ct), 0), ct);
 
         string java = JavaLocator.Find(c) ?? throw new UserVisibleException("Java isn't installed yet. Press Play again.");
         sandbox.GrantRead(JavaLocator.Home(java));
@@ -260,12 +261,27 @@ public sealed class GameInstaller(HttpClient http)
             string last = tail.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault(l => !l.StartsWith("at ", StringComparison.Ordinal)) ?? "";
             throw new UserVisibleException($"The {name} installer failed (exit code {code}). {new string(last.Where(ch => !char.IsControl(ch)).Take(200).ToArray())}");
         }
+        // The installer's work is done: from now on the sandbox only reads this folder (it is shared by every instance
+        // on this loader version, so a mod must not be able to change it).
+        GameSandbox.RequireNoLinks(folder);
+        sandbox.RevokeWrite(folder);
         File.Delete(marker);
         await File.WriteAllTextAsync(marker, profiles[0], ct);
         return new(profiles[0], version, folder);
     }
 
-    private sealed record FileJob(Uri Url, string Path, string? Sha1, long Size);
+    // The SHA-1 a Maven repository publishes as "<file>.sha1". Missing or malformed: the download is refused.
+    private async Task<string> PublishedSha1Async(Uri file, CancellationToken ct)
+    {
+        string text;
+        try { text = (await TextAsync(new Uri(file.AbsoluteUri + ".sha1"), ct)).Trim(); }
+        catch (UserVisibleException) { text = ""; }
+        string sha1 = text.Length >= 40 ? text[..40].ToLowerInvariant() : "";
+        return Regex.IsMatch(sha1, "^[0-9a-f]{40}$") ? sha1
+            : throw new UserVisibleException($"{file.Host} publishes no checksum for {Path.GetFileName(file.AbsolutePath)}, so Token Vault won't install it.");
+    }
+
+    private sealed record FileJob(Uri Url, string Path, string Sha1, long Size);
 
     private async Task DownloadAllAsync(List<FileJob> files, string stage, IProgress<InstallProgress>? progress, CancellationToken ct)
     {
@@ -290,7 +306,7 @@ public sealed class GameInstaller(HttpClient http)
 
     private async Task DownloadAsync(FileJob job, CancellationToken ct)
     {
-        if (File.Exists(job.Path) && job.Sha1 is not null && (job.Size == 0 || new FileInfo(job.Path).Length == job.Size) &&
+        if (File.Exists(job.Path) && (job.Size == 0 || new FileInfo(job.Path).Length == job.Size) &&
             await HashFileAsync(job.Path, ct) == job.Sha1) return;
         CheckHost(job.Url);
         Directory.CreateDirectory(Path.GetDirectoryName(job.Path)!);
@@ -313,7 +329,7 @@ public sealed class GameInstaller(HttpClient http)
                     sha.AppendData(buffer, 0, read);
                     await output.WriteAsync(buffer.AsMemory(0, read), ct);
                 }
-                if (job.Sha1 is not null && Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant() != job.Sha1)
+                if (Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant() != job.Sha1)
                     throw new UserVisibleException($"A downloaded file from {job.Url.Host} failed its checksum. Nothing was installed from it; try again.");
             }
             File.Move(part, job.Path, overwrite: true);

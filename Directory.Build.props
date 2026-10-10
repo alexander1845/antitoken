@@ -7,11 +7,30 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Product>Token Vault</Product>
     <Company>Token Vault</Company>
     <Authors>Alexander Dinardi</Authors>
     <Copyright>Copyright (c) 2026 Token Vault Contributors. MIT License.</Copyright>
     <Description>Sandboxed Minecraft launcher that keeps your account tokens away from mods.</Description>
   </PropertyGroup>
+  <!-- Built into every assembly (see TokenVault.Vault/BuildInfo). None of these is a secret. Override on the command line
+       with -p:Name=value, as the release workflow does. -->
+  <PropertyGroup>
+    <!-- GitHub repository whose releases the updater checks. -->
+    <TokenVaultUpdateRepository Condition="'$(TokenVaultUpdateRepository)' == ''">alexander1845/antitoken</TokenVaultUpdateRepository>
+    <!-- Base64 SubjectPublicKeyInfo of the ECDSA P-256 key that signs release manifests (scripts/New-UpdateSigningKey.ps1).
+         Empty: the updater only tells players a release exists; it never installs anything it can't verify. -->
+    <TokenVaultUpdatePublicKey Condition="'$(TokenVaultUpdatePublicKey)' == ''"></TokenVaultUpdatePublicKey>
+    <!-- PostHog PROJECT key (starts with phc_; public by design). Never a personal API key (phx_), which is a secret.
+         Empty: no usage statistics are sent, even if the player opts in. -->
+    <PostHogProjectKey Condition="'$(PostHogProjectKey)' == ''"></PostHogProjectKey>
+    <PostHogHost Condition="'$(PostHogHost)' == ''">https://us.i.posthog.com</PostHogHost>
+  </PropertyGroup>
+  <ItemGroup>
+    <AssemblyMetadata Include="TokenVault.UpdateRepository" Value="$(TokenVaultUpdateRepository)" />
+    <AssemblyMetadata Include="TokenVault.UpdatePublicKey" Value="$(TokenVaultUpdatePublicKey)" />
+    <AssemblyMetadata Include="TokenVault.PostHogProjectKey" Value="$(PostHogProjectKey)" />
+    <AssemblyMetadata Include="TokenVault.PostHogHost" Value="$(PostHogHost)" />
+  </ItemGroup>
 </Project>

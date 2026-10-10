@@ -93,6 +93,45 @@ public sealed class GameSandbox
     public void GrantRead(string directory) => Grant(directory, FileSystemRights.ReadAndExecute, write: false);
     public void GrantWrite(string directory) => Grant(directory, FileSystemRights.Modify, write: true);
 
+    private const FileSystemRights WriteBits = FileSystemRights.WriteData | FileSystemRights.AppendData | FileSystemRights.WriteExtendedAttributes |
+        FileSystemRights.WriteAttributes | FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles |
+        FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
+
+    // Takes back every right the sandbox was given directly on this folder (and, through inheritance, inside it) when one
+    // of them allows writing. Removing rights only narrows access, so following a planted link here can't widen anything.
+    // Read access is granted again afterwards where it is needed.
+    public void RevokeWrite(string directory)
+    {
+        var info = new DirectoryInfo(directory);
+        if (!info.Exists) return;
+        var acl = info.GetAccessControl();
+        bool writable = false;
+        foreach (FileSystemAccessRule rule in acl.GetAccessRules(true, false, typeof(SecurityIdentifier)))
+            if (rule.AccessControlType == AccessControlType.Allow && rule.IdentityReference == Sid && (rule.FileSystemRights & WriteBits) != 0)
+                writable = true;
+        if (!writable) return;
+        acl.PurgeAccessRules(Sid);
+        info.SetAccessControl(acl);
+    }
+
+    // Refuses a folder tree that contains a link or junction anywhere. Used before permissions are propagated into a
+    // folder that something sandboxed could once write, so a planted link can't carry a grant somewhere else.
+    // (Windows itself stops a sandboxed process from hard-linking files it can't write.)
+    public static void RequireNoLinks(string directory)
+    {
+        var pending = new Stack<DirectoryInfo>([new DirectoryInfo(directory)]);
+        while (pending.TryPop(out var dir))
+        {
+            if (!dir.Exists) continue;
+            foreach (var entry in dir.EnumerateFileSystemInfos("*", new EnumerationOptions { RecurseSubdirectories = false, AttributesToSkip = 0, IgnoreInaccessible = false }))
+            {
+                if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new UserVisibleException($"{entry.FullName} is a link, which Token Vault doesn't allow in game folders. Delete {directory} and press Play to reinstall it.");
+                if (entry is DirectoryInfo child) pending.Push(child);
+            }
+        }
+    }
+
     // Java (24+) resolves real paths by listing every parent folder. The sandbox may list folder NAMES along the chain
     // from the game root to each shared folder (this folder only, nothing inherited); file contents stay governed by
     // the grants above. Synchronize is required: Windows opens folders for listing with it.
@@ -400,8 +439,17 @@ public sealed class SandboxedProcess(SafeProcessHandle process, SafeJobHandle jo
     // Terminates the game and anything it started.
     public void Kill() => TerminateJobObject(job, 1);
 
+    // True when the process with this id is the game or something it started (members of the game's job).
+    public bool Contains(int processId)
+    {
+        using var handle = OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, false, processId);
+        return !handle.IsInvalid && IsProcessInJob(handle, job, out bool member) && member;
+    }
+
     public void Dispose() { Kill(); job.Dispose(); process.Dispose(); }
 
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(SafeProcessHandle process, out uint code);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateJobObject(SafeJobHandle job, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern SafeProcessHandle OpenProcess(uint access, bool inherit, int processId);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool IsProcessInJob(SafeProcessHandle process, SafeJobHandle job, out bool result);
 }

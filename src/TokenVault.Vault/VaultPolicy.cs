@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using TokenVault.Core;
 
 namespace TokenVault.Vault;
 
@@ -19,6 +20,12 @@ public static class VaultPolicy
 
     public static string Key(string method, string path) =>
         method == "GET" && ProfilePath.IsMatch(path) ? ProfileLookup : method + " " + path;
+
+    public const string Certificates = "POST /services/player/certificates";
+
+    // The configured list, minus the chat-signing key when the player turned signed chat off.
+    public static string[] Effective(Configuration c) =>
+        c.AllowChatSigning ? c.Allowlist : c.Allowlist.Where(k => k != Certificates).ToArray();
 
     public static bool IsAllowed(string[] configured, string method, string path)
     {

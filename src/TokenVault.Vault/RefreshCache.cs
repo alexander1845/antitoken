@@ -6,6 +6,8 @@ using TokenVault.Core;
 
 namespace TokenVault.Vault;
 
+public sealed class TpmUnavailableException() : Exception("The TPM did not respond.");
+
 public static class RefreshCacheFilter
 {
     // Pinned MSAL v3 serialization schema. Unknown categories fail closed.
@@ -57,12 +59,16 @@ public sealed class RefreshCache(string file)
         TpmKeyWrap.Delete();
     }
 
-    private IKeyWrap? Resolve(byte id) => id switch
+    private IKeyWrap? Resolve(byte id)
     {
-        DpapiKeyWrap.WrapId => dpapi,
-        TpmKeyWrap.WrapId => tpm ??= TpmKeyWrap.TryOpen(dpapi, create: false),
-        _ => null
-    };
+        if (id == DpapiKeyWrap.WrapId) return dpapi;
+        if (id != TpmKeyWrap.WrapId) return null;
+        if ((tpm ??= TpmKeyWrap.TryOpen(dpapi, create: false)) is { } open) return open;
+        // The key is there but the TPM didn't answer (busy, lockout, driver hiccup): keep the file and try next time.
+        // Only a key that is really gone makes the saved sign-in unreadable for good.
+        if (TpmKeyWrap.KeyExists() != false) throw new TpmUnavailableException();
+        return null;
+    }
 
     public void Attach(ITokenCache cache)
     {
@@ -78,6 +84,10 @@ public sealed class RefreshCache(string file)
                     plain = Envelope.IsEnvelope(stored) ? Envelope.Open(stored, Context, Resolve)
                         : ProtectedData.Unprotect(stored, Entropy, DataProtectionScope.CurrentUser);
                     args.TokenCache.DeserializeMsalV3(plain, shouldClearExistingCache: true);
+                }
+                catch (TpmUnavailableException)
+                {
+                    throw new UserVisibleException("Windows couldn't reach this PC's TPM to unlock your saved sign-in. Your sign-in is kept; try again in a moment, or restart the PC.");
                 }
                 catch (CryptographicException)
                 {

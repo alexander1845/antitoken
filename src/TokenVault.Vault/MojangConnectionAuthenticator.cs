@@ -7,7 +7,7 @@ public sealed class MojangConnectionAuthenticator(HttpClient http, MinecraftIden
 {
     public async Task AuthorizeOwnedConnectionAsync(string serverHash, CancellationToken ct)
     {
-        if (DateTimeOffset.UtcNow >= identity.ExpiresAt.AddSeconds(-30)) throw new InvalidOperationException("Session expired; restart the vault.");
+        if (DateTimeOffset.UtcNow >= identity.ExpiresAt.AddSeconds(-30)) throw new SessionExpiredException();
         using var response = await http.PostAsJsonAsync("https://sessionserver.mojang.com/session/minecraft/join",
             new { accessToken = identity.Token.Reveal(), selectedProfile = identity.Profile.Id, serverId = serverHash }, ct);
         if (response.StatusCode == HttpStatusCode.NoContent) return;

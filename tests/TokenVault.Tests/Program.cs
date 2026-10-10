@@ -45,7 +45,13 @@ var tests = new (string Name, Func<Task> Run)[]
     ("offline upstream refusal before gameplay", OfflineTests),
     ("sandbox folder policy, command-line quoting and Java truststore format", SandboxTests),
     ("server list file, server addresses, pack detection and pack path safety", PackTests),
-    ("join approval and one connection at a time", ApprovalTests)
+    ("join approval and one connection at a time", ApprovalTests),
+    ("broker hardening: game-only connections, join deadline, shared reconnect limit, disconnect", BrokerHardeningTests),
+    ("API: wrong-token guesses rate-limited, chat signing can be turned off", ApiHardeningTests),
+    ("batched AES-CFB8 matches the byte-by-byte definition", Cfb8BatchTests),
+    ("pack import: game-folder allowlist, credential filter, versions and loaders", PackImportTests),
+    ("updater: signed manifest, rollback and tamper refusal, in-place install", UpdaterTests),
+    ("usage statistics: fixed vocabulary, project keys only", TelemetryTests)
 };
 int failures = 0;
 foreach (var test in tests)
@@ -413,11 +419,16 @@ static Task PackTests()
         foreach (string bad in new[] { "../x", "versions/../../x", "a//b" })
             try { GameInstaller.Under(dir, bad); throw new Exception("Unsafe install path accepted: " + bad); } catch (InvalidDataException) { }
 
-        // Only Minecraft 26.1.2 + Fabric packs are accepted, before anything is downloaded.
-        PackImporter.RequireCompatible("26.1.2", "0.19.5", null);
-        PackImporter.RequireCompatible(null, null, null);
-        try { PackImporter.RequireCompatible("1.21.1", "0.16.0", null); throw new Exception("Wrong version accepted."); } catch (UserVisibleException) { }
-        try { PackImporter.RequireCompatible("26.1.2", null, "Forge"); throw new Exception("Forge accepted."); } catch (UserVisibleException) { }
+        // Packs set up their instance for the Minecraft version and loader they declare.
+        var forge = new Instance(); PackImporter.ApplyLoader(forge, "1.20.1", "forge", "47.2.0");
+        Check(forge.MinecraftVersion == "1.20.1" && forge.Loader == "forge" && forge.LoaderVersion == "1.20.1-47.2.0", "Forge pack version not applied.");
+        var neo = new Instance(); PackImporter.ApplyLoader(neo, "1.21.1", "neoforge", "21.1.77");
+        Check(neo.LoaderVersion == "21.1.77" && neo.Loader == "neoforge", "NeoForge pack version not applied.");
+        var plain = new Instance(); PackImporter.ApplyLoader(plain, "1.21.4", null, null);
+        Check(plain.Loader == "vanilla" && plain.LoaderVersion is null, "Loader-less pack not vanilla.");
+        try { PackImporter.ApplyLoader(new Instance(), "1.21.1", "liteloader", "1"); throw new Exception("Unknown loader accepted."); } catch (UserVisibleException) { }
+        try { PackImporter.ApplyLoader(new Instance(), "../x", "fabric", "1"); throw new Exception("Bad version accepted."); } catch (UserVisibleException) { }
+        Check(PackImporter.LoaderId("net.neoforged") == "neoforge" && PackImporter.LoaderId("quilt-loader") == "quilt" && PackImporter.LoaderId("x") is null, "Loader ids wrong.");
     }
     finally { Directory.Delete(dir, true); }
     return Task.CompletedTask;
@@ -427,7 +438,7 @@ static async Task ApprovalTests()
 {
     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10)); var ct = timeout.Token;
     var events = new List<string>();
-    async Task<(byte[] Reply, Task Handling, MockAuthenticator Auth)> Attempt(JoinApproval? approve, SemaphoreSlim? slot)
+    async Task<(byte[] Reply, Task Handling, MockAuthenticator Auth)> Attempt(JoinApproval? approve, BrokerGate? slot)
     {
         var local = new TcpListener(IPAddress.Loopback, 0); local.Start();
         var game = new TcpClient(); await game.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)local.LocalEndpoint).Port, ct);
@@ -454,11 +465,353 @@ static async Task ApprovalTests()
     Check(blocked.Auth.Calls == 0 && events.Contains("broker:blocked:127.0.0.1"), "Blocked join reached authentication.");
 
     // While a connection holds the shared slot, any other connection (any server) is refused before approval or login.
-    var slot = new SemaphoreSlim(0, 1);
+    var slot = new BrokerGate(); Check(slot.TryEnter(), "Gate not free.");
     bool approvalAsked = false;
     var busy = await Attempt((_, _) => { approvalAsked = true; return Task.FromResult(true); }, slot);
     await Throws<InvalidOperationException>(() => busy.Handling);
     Check(!approvalAsked && busy.Auth.Calls == 0 && events.Contains("broker:busy:127.0.0.1"), "Second connection was not refused.");
+}
+
+// A minimal online-mode server: encryption, login success, then sends `fill` bytes forever (or until closed).
+static (int Port, Task Done) MockOnlineServer(TcpListener listener, CancellationToken ct)
+{
+    int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    var done = Task.Run(async () =>
+    {
+        using var rsa = RSA.Create(1024); byte[] pub = rsa.ExportSubjectPublicKeyInfo();
+        using var c = await listener.AcceptTcpClientAsync(ct); Stream raw = c.GetStream();
+        await PacketIO.ReadAsync(raw, -1, ct); await PacketIO.ReadAsync(raw, -1, ct);
+        await PacketIO.WriteAsync(raw, PacketIO.Packet(1, s => { PacketIO.WriteString(s, ""); PacketIO.WriteBytes(s, pub); PacketIO.WriteBytes(s, [1, 2, 3, 4]); s.WriteByte(1); }), -1, ct);
+        var response = await PacketIO.ReadAsync(raw, -1, ct); int o = 0; PacketIO.ReadVarInt(response, ref o);
+        byte[] secret = rsa.Decrypt(PacketIO.ReadBytes(response, ref o, 4096), RSAEncryptionPadding.Pkcs1);
+        using var encrypted = new CipherStream(raw, secret);
+        await PacketIO.WriteAsync(encrypted, PacketIO.Packet(2, s => { s.Write(Convert.FromHexString(Profile().Id)); PacketIO.WriteString(s, Profile().Name); PacketIO.WriteVarInt(s, 0); }), -1, ct);
+        await PacketIO.ReadAsync(encrypted, -1, ct);
+        try { while (!ct.IsCancellationRequested) { await PacketIO.WriteAsync(encrypted, [0x20, 1], -1, ct); await Task.Delay(5, ct); } }
+        catch (Exception) { }
+    }, ct);
+    return (port, done);
+}
+
+static async Task<TcpClient> Join(int brokerPort, CancellationToken ct)
+{
+    var game = new TcpClient(); await game.ConnectAsync(IPAddress.Loopback, brokerPort, ct);
+    try
+    {
+        await PacketIO.WriteAsync(game.GetStream(), PacketIO.Handshake("ignored", 1, 2), -1, ct);
+        await PacketIO.WriteAsync(game.GetStream(), PacketIO.LoginStart(Profile()), -1, ct);
+    }
+    catch (Exception ex) when (ex is IOException or InvalidOperationException) { } // a refused connection may already be closed
+    return game;
+}
+
+static async Task<string> DisconnectText(Stream stream, CancellationToken ct)
+{
+    byte[] packet = await PacketIO.ReadAsync(stream, -1, ct); int o = 0;
+    Check(PacketIO.ReadVarInt(packet, ref o) == 0, "Expected a disconnect.");
+    return PacketIO.ReadString(packet, ref o);
+}
+
+static async Task BrokerHardeningTests()
+{
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)); var ct = timeout.Token;
+
+    // 1. Connections that don't come from the game are refused before anything happens.
+    var events = new List<string>();
+    var origin = new ConnectionOrigin();
+    var auth = new MockAuthenticator(new TaskCompletionSource<string>());
+    var listener = ConnectionBroker.Listen(); int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+    Task running = new ConnectionBroker(new ServerEntry("x", "127.0.0.1", 9), Profile(), auth, e => { lock (events) events.Add(e); }, null, null, 775, origin).RunAsync(listener, stop.Token);
+    using (var foreign = await Join(port, ct))
+    {
+        int read = 0;
+        try { read = await foreign.GetStream().ReadAsync(new byte[16], ct); } catch (Exception ex) when (ex is IOException or InvalidOperationException) { }
+        Check(read == 0 && auth.Calls == 0, "A connection from outside the game was served.");
+    }
+    lock (events) Check(events.Contains("broker:foreign:127.0.0.1"), "Foreign connection not reported.");
+    // Once the check recognises the caller (in the app: a process in the game's job), it is served.
+    IPEndPoint? seen = null;
+    origin.Allow((client, server) => { seen = client; return server.Port == port; });
+    using (var game = await Join(port, ct))
+    {
+        string reason = await DisconnectText(game.GetStream(), ct); // port 9 is closed: a normal failure, after the check passed
+        Check(seen is not null && reason.Contains("connect to 127.0.0.1", StringComparison.Ordinal), "Recognised game connection not served: " + reason);
+    }
+    stop.Cancel(); await running;
+
+    // 2. After the session's sign-in expires, no new sign-in happens and the game is told why.
+    var local = new TcpListener(IPAddress.Loopback, 0); local.Start();
+    var expiredAuth = new MockAuthenticator(new TaskCompletionSource<string>());
+    var expired = new ConnectionBroker(new ServerEntry("x", "127.0.0.1", 9), Profile(), expiredAuth, _ => { }, null, null, 775, null, DateTimeOffset.UtcNow.AddMinutes(-1));
+    using (var game = new TcpClient())
+    {
+        await game.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)local.LocalEndpoint).Port, ct);
+        using var accepted = await local.AcceptTcpClientAsync(ct);
+        Task handling = expired.HandleAsync(accepted.GetStream(), ct);
+        await PacketIO.WriteAsync(game.GetStream(), PacketIO.Handshake("x", 1, 2), -1, ct);
+        await PacketIO.WriteAsync(game.GetStream(), PacketIO.LoginStart(Profile()), -1, ct);
+        Check((await DisconnectText(game.GetStream(), ct)).Contains("expired", StringComparison.Ordinal) && expiredAuth.Calls == 0, "Expired session signed in.");
+        await handling;
+    }
+
+    // 3. The reconnect limit is shared by every server's broker.
+    var gate = new BrokerGate();
+    async Task<string> Attempt(ConnectionBroker broker)
+    {
+        using var game = new TcpClient(); await game.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)local.LocalEndpoint).Port, ct);
+        using var accepted = await local.AcceptTcpClientAsync(ct);
+        Task handling = broker.HandleAsync(accepted.GetStream(), ct);
+        await PacketIO.WriteAsync(game.GetStream(), PacketIO.Handshake("x", 1, 2), -1, ct);
+        await PacketIO.WriteAsync(game.GetStream(), PacketIO.LoginStart(Profile()), -1, ct);
+        string text = await DisconnectText(game.GetStream(), ct);
+        try { await handling; } catch (Exception) { }
+        return text;
+    }
+    await Attempt(new ConnectionBroker(new ServerEntry("a", "127.0.0.1", 9), Profile(), new MockAuthenticator(new()), _ => { }, null, gate));
+    Check((await Attempt(new ConnectionBroker(new ServerEntry("b", "127.0.0.1", 9), Profile(), new MockAuthenticator(new()), _ => { }, null, gate)))
+        .Contains("too quickly", StringComparison.Ordinal), "Reconnect limit is per server, not shared.");
+
+    // 4. A live connection keeps running until the player presses Disconnect.
+    var remote = new TcpListener(IPAddress.Loopback, 0); remote.Start();
+    using var serverStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+    var (remotePort, serverDone) = MockOnlineServer(remote, serverStop.Token);
+    var liveGate = new BrokerGate();
+    var liveEvents = new List<string>();
+    var live = new ConnectionBroker(new ServerEntry("x", "127.0.0.1", remotePort), Profile(), new MockAuthenticator(new()), e => { lock (liveEvents) liveEvents.Add(e); }, null, liveGate);
+    using (var game = new TcpClient())
+    {
+        await game.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)local.LocalEndpoint).Port, ct);
+        using var accepted = await local.AcceptTcpClientAsync(ct);
+        Task handling = live.HandleAsync(accepted.GetStream(), ct);
+        var gs = game.GetStream();
+        await PacketIO.WriteAsync(gs, PacketIO.Handshake("x", 1, 2), -1, ct);
+        await PacketIO.WriteAsync(gs, PacketIO.LoginStart(Profile()), -1, ct);
+        Check((await PacketIO.ReadAsync(gs, -1, ct))[0] == 2, "Login success missing.");
+        await PacketIO.WriteAsync(gs, [3], -1, ct);
+        await PacketIO.ReadAsync(gs, -1, ct);
+        lock (liveEvents) Check(liveEvents.Contains("broker:connected:127.0.0.1"), "Live connection not reported.");
+        Check(liveGate.DisconnectActive(), "Disconnect found no live connection.");
+        await handling.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        lock (liveEvents) Check(liveEvents.Contains("broker:disconnected:127.0.0.1"), "Disconnect not reported.");
+        Check(!liveGate.DisconnectActive(), "Connection still marked live.");
+    }
+    serverStop.Cancel(); try { await serverDone; } catch (Exception) { }
+    remote.Stop(); local.Stop();
+}
+
+static async Task ApiHardeningTests()
+{
+    var config = new Configuration { HttpsPort = Port(), AllowChatSigning = false };
+    using var identity = new MinecraftIdentity(new SecretValue("real-access-canary"), Profile(), DateTimeOffset.UtcNow.AddHours(1));
+    string fake = FakeToken.Create(Profile(), identity.ExpiresAt);
+    using var cert = LocalCertificate.Create();
+    var handler = new MockApi(); using var upstream = new HttpClient(handler);
+    await using var app = new HttpsVault(config, identity, fake, cert, upstream, _ => { }).Create();
+    await app.StartAsync();
+    using var localHandler = new HttpClientHandler { UseProxy = false, ServerCertificateCustomValidationCallback = (_, peer, _, _) => peer?.GetCertHashString() == cert.GetCertHashString() };
+    using var client = new HttpClient(localHandler) { BaseAddress = new Uri($"https://127.0.0.1:{config.HttpsPort}") };
+    try
+    {
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", fake);
+        using (var certificates = await client.PostAsync("/services/player/certificates", null))
+            Check(certificates.StatusCode == HttpStatusCode.Forbidden && handler.Calls == 0, "Chat-signing key served while signed chat is off.");
+        using (var attributes = await client.GetAsync("/services/player/attributes"))
+            Check(attributes.IsSuccessStatusCode, "Allowed call refused.");
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "guess");
+        var codes = new List<HttpStatusCode>();
+        for (int i = 0; i < 125; i++) { using var r = await client.GetAsync("/services/player/attributes"); codes.Add(r.StatusCode); }
+        Check(codes.Contains(HttpStatusCode.TooManyRequests), "Wrong-token guesses are not rate-limited.");
+    }
+    finally { await app.StopAsync(); }
+}
+
+static Task Cfb8BatchTests()
+{
+    // Reference: CFB8 straight from its definition, one AES block per byte.
+    static byte[] Reference(byte[] key, byte[] input, bool encrypt)
+    {
+        using var aes = Aes.Create(); aes.Key = key;
+        byte[] register = key.ToArray(), output = new byte[input.Length], block = new byte[16];
+        for (int i = 0; i < input.Length; i++)
+        {
+            aes.EncryptEcb(register, block, PaddingMode.None);
+            output[i] = (byte)(input[i] ^ block[0]);
+            Buffer.BlockCopy(register, 1, register, 0, 15);
+            register[15] = encrypt ? output[i] : input[i];
+        }
+        return output;
+    }
+    for (int round = 0; round < 20; round++)
+    {
+        byte[] key = RandomNumberGenerator.GetBytes(16), plain = RandomNumberGenerator.GetBytes(RandomNumberGenerator.GetInt32(1, 20000));
+        byte[] cipher = Reference(key, plain, true);
+        using var decryptor = MinecraftCrypto.CreateCipher(key, false);
+        byte[] output = new byte[plain.Length];
+        for (int done = 0; done < cipher.Length;)
+        {
+            int n = Math.Min(cipher.Length - done, RandomNumberGenerator.GetInt32(1, 9000));
+            byte[] chunk = cipher[done..(done + n)];
+            decryptor.TransformBlock(chunk, 0, n, chunk, 0); // in place, as CipherStream does
+            chunk.CopyTo(output, done); done += n;
+        }
+        Check(output.SequenceEqual(plain), "Batched CFB8 decryption differs from the definition.");
+        using var encryptor = MinecraftCrypto.CreateCipher(key, true);
+        Check(encryptor.TransformFinalBlock(plain, 0, plain.Length).SequenceEqual(cipher), "CFB8 encryption differs from the definition.");
+    }
+    byte[] big = RandomNumberGenerator.GetBytes(16 * 1024 * 1024);
+    using (var decrypt = MinecraftCrypto.CreateCipher(new byte[16], false))
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        for (int at = 0; at < big.Length; at += 65536) decrypt.TransformBlock(big, at, 65536, big, at);
+        Console.WriteLine($"     (CFB8 decryption: {big.Length / 1048576.0 / watch.Elapsed.TotalSeconds:0} MiB/s on one core)");
+    }
+    return Task.CompletedTask;
+}
+
+static async Task PackImportTests()
+{
+    string dir = Path.Combine(Path.GetTempPath(), "vault-import-test-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(dir);
+    var created = new List<Instance>();
+    try
+    {
+        byte[] Jar(string entry, string text)
+        {
+            using var ms = new MemoryStream();
+            using (var zip = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, true))
+            using (var w = new StreamWriter(zip.CreateEntry(entry).Open())) w.Write(text);
+            return ms.ToArray();
+        }
+        string pack = Path.Combine(dir, "my-dotminecraft.zip");
+        using (var zip = System.IO.Compression.ZipFile.Open(pack, System.IO.Compression.ZipArchiveMode.Create))
+        {
+            void Add(string path, byte[] data) { using var s = zip.CreateEntry(path).Open(); s.Write(data); }
+            byte[] canary = "SYNTHETIC-CANARY-NOT-A-TOKEN"u8.ToArray();
+            Add(".minecraft/mods/a.jar", Jar("fabric.mod.json", "{\"id\":\"a\",\"depends\":{\"minecraft\":\"~1.20.1\"}}"));
+            Add(".minecraft/mods/b.jar", Jar("fabric.mod.json", "{\"id\":\"b\",\"depends\":{\"minecraft\":\">=1.20.1 <1.21\"}}"));
+            Add(".minecraft/config/sodium.json", "{}"u8.ToArray());
+            Add(".minecraft/options.txt", "fov:1"u8.ToArray());
+            foreach (string secret in new[] { "essential/microsoft_accounts.json", "TlauncherProfiles.json", "meteor-client/accounts.nbt",
+                         "launcher_accounts.json", "feather/accounts.json", "config/someclient/alts.encrypted_json", "config/tokens.json", "versions/x/x.jar" })
+                Add(".minecraft/" + secret, canary);
+        }
+        using var http = PackImporter.CreateHttp();
+        var instance = await new PackImporter(http).ImportAsync(pack, null, default);
+        created.Add(instance);
+        var files = Directory.EnumerateFiles(instance.Directory, "*", SearchOption.AllDirectories).Select(f => Path.GetRelativePath(instance.Directory, f).Replace('\\', '/')).ToList();
+        Check(files.Order().SequenceEqual(new[] { "config/sodium.json", "mods/a.jar", "mods/b.jar", "options.txt" }), "Unexpected files copied: " + string.Join(", ", files));
+        Check(files.All(f => !File.ReadAllText(Path.Combine(instance.Directory, f)).Contains("CANARY")), "A credential file reached the instance.");
+        Check(instance.MinecraftVersion == "1.20.1" && instance.Loader == "fabric", $"Loose mods detected as {instance.MinecraftVersion}/{instance.Loader}.");
+        foreach (string name in new[] { "microsoft_accounts.json", "TlauncherProfiles.json", "accounts.nbt", "alts.encrypted_json", "launcher_accounts.json" })
+            Check(SafeFiles.IsCredentialFile("x/" + name), "Not treated as a credential file: " + name);
+        Check(!SafeFiles.IsCredentialFile("config/sodium-options.json"), "Ordinary config treated as credential.");
+    }
+    finally
+    {
+        foreach (var i in created) try { Directory.Delete(i.Directory, true); } catch (IOException) { }
+        Directory.Delete(dir, true);
+    }
+}
+
+static async Task UpdaterTests()
+{
+    using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    string publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+    byte[] package;
+    using (var ms = new MemoryStream())
+    {
+        using (var zip = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, true))
+        {
+            using (var w = zip.CreateEntry("TokenVault/TokenVault.exe").Open()) w.Write("NEW-BUILD"u8);
+            using (var w = zip.CreateEntry("TokenVault/AuthlibProbe.java").Open()) w.Write("class AuthlibProbe {}"u8);
+        }
+        package = ms.ToArray();
+    }
+    byte[] Manifest(string version, byte[] file) => Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+    { product = "TokenVault", version, file = Updater.PackageName, sha256 = Convert.ToHexString(SHA256.HashData(file)).ToLowerInvariant(), size = file.Length }));
+    string Sign(byte[] data, ECDsa signer) => Convert.ToBase64String(signer.SignData(data, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence));
+
+    byte[] manifest = Manifest("1.2.0", package);
+    Check(Updater.VerifyManifest(manifest, Sign(manifest, key), publicKey).Version == new Version(1, 2, 0), "Valid manifest refused.");
+    byte[] altered = manifest.ToArray(); altered[^3] ^= 1;
+    await Throws<UpdateException>(() => Task.Run(() => Updater.VerifyManifest(altered, Sign(manifest, key), publicKey)));
+    using var other = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    await Throws<UpdateException>(() => Task.Run(() => Updater.VerifyManifest(manifest, Sign(manifest, other), publicKey)));
+    Check(Updater.ParseTag("v1.2.3") == new Version(1, 2, 3) && Updater.ParseTag("v1.2") is null && Updater.ParseTag("1.2.3-beta") is null, "Tag parsing wrong.");
+
+    // A mock of GitHub: the release API and the three release files.
+    var files = new Dictionary<string, byte[]>();
+    string release = "v1.2.0";
+    var github = new MockGitHub(() => Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+    {
+        tag_name = release, html_url = "https://github.com/o/r/releases/tag/" + release, draft = false, prerelease = false,
+        assets = new[] { Updater.PackageName, Updater.ManifestName, Updater.SignatureName }
+            .Select(n => new { name = n, browser_download_url = "https://github.com/o/r/releases/download/" + release + "/" + n })
+    })), files);
+    using var http = new HttpClient(github);
+    void Publish(byte[] zip, byte[] man, string sig) { files[Updater.PackageName] = zip; files[Updater.ManifestName] = man; files[Updater.SignatureName] = Encoding.ASCII.GetBytes(sig); }
+    string staging = Path.Combine(Path.GetTempPath(), "vault-update-test-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        Publish(package, manifest, Sign(manifest, key));
+        Check(await new Updater(http, "o/r", publicKey, new Version(1, 2, 0)).CheckAsync(default) is null, "Same version offered as an update.");
+        var updater = new Updater(http, "o/r", publicKey, new Version(1, 0, 0));
+        var info = await updater.CheckAsync(default) ?? throw new Exception("Newer release not found.");
+        Check(info.Installable && info.Version == new Version(1, 2, 0), "Release assets not found.");
+        var staged = await updater.DownloadAsync(info, staging, default);
+        Check(File.ReadAllText(staged.Executable) == "NEW-BUILD" && staged.Probe is not null, "Staged update wrong.");
+
+        // In-place install: the running file is renamed, the new one takes its name.
+        string app = Path.Combine(staging, "app"); Directory.CreateDirectory(app);
+        string exe = Path.Combine(app, "TokenVault.exe"); File.WriteAllText(exe, "OLD-BUILD");
+        Updater.Install(staged, exe);
+        Check(File.ReadAllText(exe) == "NEW-BUILD" && File.Exists(exe + ".old") && File.Exists(Path.Combine(app, "AuthlibProbe.java")), "Install did not swap the program.");
+        Updater.CleanUp(exe);
+        Check(!File.Exists(exe + ".old"), "Old program not cleaned up.");
+
+        // A swapped package, a manifest signed by someone else, and a replayed older release are all refused.
+        byte[] evil = package.ToArray(); evil[^10] ^= 1;
+        Publish(evil, manifest, Sign(manifest, key));
+        await Throws<UpdateException>(() => updater.DownloadAsync(info, staging, default));
+        byte[] evilManifest = Manifest("1.2.0", evil);
+        Publish(evil, evilManifest, Sign(evilManifest, other));
+        await Throws<UpdateException>(() => updater.DownloadAsync(info, staging, default));
+        byte[] old = Manifest("1.0.0", package);
+        Publish(package, old, Sign(old, key));
+        await Throws<UpdateException>(() => updater.DownloadAsync(info, staging, default));
+        // Without a built-in key nothing is installed, only offered.
+        Check(!new Updater(http, "o/r", "", new Version(1, 0, 0)).CanInstall, "Keyless build can install.");
+        await Throws<UpdateException>(() => new Updater(http, "o/r", "", new Version(1, 0, 0)).DownloadAsync(info, staging, default));
+        // Downloads may only come from GitHub.
+        github.Redirect = "https://evil.invalid/x";
+        await Throws<UpdateException>(() => updater.DownloadAsync(info, staging, default));
+    }
+    finally { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
+}
+
+static Task TelemetryTests()
+{
+    string id = Guid.NewGuid().ToString("N");
+    byte[] payload = Telemetry.Payload("game_launched", new Dictionary<string, string> { ["minecraft_version"] = "1.21.1", ["loader"] = "fabric" },
+        "phc_test", id, "1.1.0", "10.0.22631", DateTimeOffset.UnixEpoch);
+    using var json = JsonDocument.Parse(payload);
+    var props = json.RootElement.GetProperty("properties");
+    Check(json.RootElement.GetProperty("distinct_id").GetString() == id && json.RootElement.GetProperty("event").GetString() == "game_launched", "Payload shape wrong.");
+    Check(props.GetProperty("$geoip_disable").GetBoolean() && !props.GetProperty("$process_person_profile").GetBoolean(), "Location/person profile not disabled.");
+    var keys = props.EnumerateObject().Select(p => p.Name).Order().ToArray();
+    Check(keys.SequenceEqual(new[] { "$geoip_disable", "$lib", "$lib_version", "$process_person_profile", "app_version", "loader", "minecraft_version", "os_version" }), "Unexpected properties: " + string.Join(",", keys));
+    foreach (var (name, props2) in new (string, Dictionary<string, string>?)[]
+    {
+        ("anything_else", null), ("game_launched", new() { ["username"] = "VaultTester" }), ("game_launched", new() { ["loader"] = "a@b.c" }),
+        ("join_approved", new() { ["source"] = "play.example.net:25565" })
+    })
+        try { Telemetry.Payload(name, props2, "phc_test", id, "1", "1", DateTimeOffset.UnixEpoch); throw new Exception("Statistics accepted: " + name); }
+        catch (ArgumentException) { }
+    Check(!new Telemetry(new HttpClient(), () => true, id, "phx_personal_key", "https://us.i.posthog.com").Configured, "A personal API key was accepted.");
+    Check(!new Telemetry(new HttpClient(), () => true, id, "phc_x", "http://us.i.posthog.com").Configured, "Plain HTTP endpoint accepted.");
+    Check(new Telemetry(new HttpClient(), () => true, id, "phc_x", "https://us.i.posthog.com").Configured, "Valid configuration refused.");
+    return Task.CompletedTask;
 }
 
 static async Task ProbeFixture(string directory)
@@ -503,4 +856,23 @@ sealed class XorWrap(byte id) : IKeyWrap
     public byte Id => id;
     public byte[] Wrap(byte[] key) => key.Select((b, i) => (byte)(b ^ Pad[i % 32])).ToArray();
     public byte[] Unwrap(byte[] wrapped) => Wrap(wrapped);
+}
+
+sealed class MockGitHub(Func<byte[]> release, Dictionary<string, byte[]> files) : HttpMessageHandler
+{
+    public string? Redirect;
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var url = request.RequestUri!;
+        if (url.Host == "api.github.com") return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(release()) });
+        if (url.Host == "github.com")
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Found);
+            response.Headers.Location = new Uri(Redirect ?? "https://release-assets.githubusercontent.com/" + url.Segments[^1]);
+            return Task.FromResult(response);
+        }
+        if (url.Host.EndsWith(".githubusercontent.com") && files.TryGetValue(url.Segments[^1], out var data))
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(data) });
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+    }
 }

@@ -7,7 +7,9 @@ namespace TokenVault.Launcher;
 [SupportedOSPlatform("windows")]
 public static class JavaLauncher
 {
-    public static async Task<int> LaunchAsync(Configuration c, SessionDescriptor session, GameSandbox sandbox, Action<string> log, CancellationToken ct)
+    // started: called with the game process once it runs (Token Vault uses it to recognise the game's connections).
+    public static async Task<int> LaunchAsync(Configuration c, SessionDescriptor session, GameSandbox sandbox, Action<string> log, CancellationToken ct,
+        Action<SandboxedProcess>? started = null)
     {
         if (session.MinecraftVersion != c.MinecraftVersion || session.ExpiresAt <= DateTimeOffset.UtcNow || session.HttpsPort != c.HttpsPort)
             throw new InvalidDataException("Vault descriptor does not match configuration or has expired.");
@@ -38,12 +40,25 @@ public static class JavaLauncher
             await File.WriteAllBytesAsync(trust, JavaTrustStore.Create(
                 [("tokenvault-loopback", Convert.FromBase64String(session.CertificateDer)), .. JavaTrustStore.WindowsRoots()],
                 DateTimeOffset.UtcNow), ct);
-            string probe = Path.Combine(run, "AuthlibProbe.java");
-            File.Copy(Path.Combine(AppContext.BaseDirectory, "AuthlibProbe.java"), probe);
+            // The self-check needs a JDK (Mojang's runtime has no compiler) and AuthlibProbe.java next to TokenVault.exe.
+            // It is a compatibility check only (the game holds a fake token either way), so without them the game still starts.
+            bool modernAuthlib = installed.ClassPath.Split(Path.PathSeparator)
+                .Any(path => Regex.IsMatch(Path.GetFileName(path), @"^authlib-([4-9]|\d{2,})\.", RegexOptions.CultureInvariant)); // 1.19.3+
+            string probeSource = Path.Combine(AppContext.BaseDirectory, "AuthlibProbe.java"), probe = Path.Combine(run, "AuthlibProbe.java");
+            bool selfCheck = JavaLocator.IsJdk(java) && modernAuthlib;
+            if (selfCheck && File.Exists(probeSource)) File.Copy(probeSource, probe);
+            else if (selfCheck) { selfCheck = false; log("Skipping the sign-in self-check: AuthlibProbe.java isn't next to TokenVault.exe."); }
 
             log("Sharing only the needed folders with the sandbox…");
+            // The Forge/NeoForge folder is shared by every instance on that loader version. It was writable only while its
+            // installer ran; builds before 1.1 left it writable, which would let a mod in one instance alter all of them.
+            if (c.LoaderDirectory.Length > 0)
+            {
+                string loader = Configuration.Expand(c.LoaderDirectory);
+                GameSandbox.RequireNoLinks(loader);
+                sandbox.RevokeWrite(loader);
+            }
             foreach (string directory in readOnly) sandbox.GrantRead(directory);
-            if (c.LoaderDirectory.Length > 0) sandbox.GrantWrite(Configuration.Expand(c.LoaderDirectory)); // Forge/NeoForge folder
             if (!modsInsideGame) sandbox.GrantRead(mods);
             Directory.CreateDirectory(skins);
             // Skin cache only; holds downloaded PNGs. Not needed to play, so a failure here doesn't stop the launch.
@@ -61,9 +76,7 @@ public static class JavaLauncher
 
             var properties = Properties(session, trust, temp, game);
             var environment = SandboxEnvironment(temp);
-            bool modernAuthlib = installed.ClassPath.Split(Path.PathSeparator)
-                .Any(path => Regex.IsMatch(Path.GetFileName(path), @"^authlib-([4-9]|\d{2,})\.", RegexOptions.CultureInvariant)); // 1.19.3+
-            if (JavaLocator.IsJdk(java) && modernAuthlib)
+            if (selfCheck)
             {
                 log("Checking Authlib redirection inside the sandbox…");
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -94,6 +107,7 @@ public static class JavaLauncher
             // No command-line logging, @argfiles, token files, or real-token environment inheritance.
             log($"Starting Minecraft {c.MinecraftVersion} ({GameInstaller.LoaderName(c.Loader)}) in the sandbox{(c.AllowClipboard ? "" : ", clipboard blocked")}.");
             using var process = sandbox.Start(java, arguments, game, environment, c.AllowClipboard, output.SafeFileHandle);
+            started?.Invoke(process);
             int code = await process.WaitForExitAsync(ct); // Dispose kills the whole job, including on cancel.
             if (code != 0)
                 foreach (string line in Tail(output).Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(20)) log("  " + line);

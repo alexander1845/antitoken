@@ -20,8 +20,30 @@ jobs:
       - run: dotnet restore TokenVault.sln
       - run: dotnet build TokenVault.sln -c Release --no-restore
       - run: dotnet run --project tests/TokenVault.Tests -c Release --no-build
+      # Release builds take their version from the tag (the updater compares versions), and the public build settings
+      # from repository VARIABLES (not secrets; both values are public by design):
+      #   UPDATE_PUBLIC_KEY    base64 public key from scripts/New-UpdateSigningKey.ps1 (enables installing updates)
+      #   POSTHOG_PROJECT_KEY  PostHog PROJECT key, phc_... (enables opt-in usage statistics). Never a phx_ personal key.
       - if: runner.os == 'Windows'
-        run: dotnet publish src/TokenVault.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o artifacts/TokenVault
+        shell: bash
+        env:
+          UPDATE_PUBLIC_KEY: ${{ vars.UPDATE_PUBLIC_KEY }}
+          POSTHOG_PROJECT_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
+        run: |
+          args=()
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Release tags must look like v1.2.3"; exit 1; }
+            args+=("-p:Version=$version")
+          fi
+          if [[ -n "$UPDATE_PUBLIC_KEY" ]]; then args+=("-p:TokenVaultUpdatePublicKey=$UPDATE_PUBLIC_KEY"); fi
+          if [[ -n "$POSTHOG_PROJECT_KEY" ]]; then
+            [[ "$POSTHOG_PROJECT_KEY" == phc_* ]] || { echo "POSTHOG_PROJECT_KEY must be a PostHog project key (phc_...)"; exit 1; }
+            args+=("-p:PostHogProjectKey=$POSTHOG_PROJECT_KEY")
+          fi
+          dotnet publish src/TokenVault.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none \
+            -o artifacts/TokenVault "${args[@]}"
       # Authenticode signing, only when a certificate is configured as repository secrets:
       #   SIGNING_CERT_PFX_BASE64  base64 of the .pfx   SIGNING_CERT_PASSWORD  its password
       # Signed builds stop Windows SmartScreen from naming an "unknown publisher". See README, "Windows warning".
@@ -57,7 +79,32 @@ jobs:
           name: TokenVault-win-x64
           path: TokenVault
       - run: zip -r TokenVault-win-x64.zip TokenVault
+      # The signed manifest is what lets installed copies update themselves. The private key is only used here, from the
+      # UPDATE_SIGNING_KEY secret; the signature is checked against UPDATE_PUBLIC_KEY before anything is published.
+      - name: Sign the update manifest
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          UPDATE_PUBLIC_KEY: ${{ vars.UPDATE_PUBLIC_KEY }}
+        run: |
+          if [[ -z "$UPDATE_SIGNING_KEY" || -z "$UPDATE_PUBLIC_KEY" ]]; then
+            echo "::warning::UPDATE_SIGNING_KEY / UPDATE_PUBLIC_KEY not set: this release can't be installed automatically."
+            exit 0
+          fi
+          umask 077
+          version="${GITHUB_REF_NAME#v}"
+          size=$(stat -c%s TokenVault-win-x64.zip)
+          sha=$(sha256sum TokenVault-win-x64.zip | cut -d' ' -f1)
+          printf '{"product":"TokenVault","version":"%s","file":"TokenVault-win-x64.zip","sha256":"%s","size":%s}' "$version" "$sha" "$size" > TokenVault-update.json
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/signing.pem"
+          openssl dgst -sha256 -sign "$RUNNER_TEMP/signing.pem" -out "$RUNNER_TEMP/manifest.sig" TokenVault-update.json
+          rm -f "$RUNNER_TEMP/signing.pem"
+          { echo "-----BEGIN PUBLIC KEY-----"; echo "$UPDATE_PUBLIC_KEY" | fold -w 64; echo "-----END PUBLIC KEY-----"; } > "$RUNNER_TEMP/public.pem"
+          openssl dgst -sha256 -verify "$RUNNER_TEMP/public.pem" -signature "$RUNNER_TEMP/manifest.sig" TokenVault-update.json
+          base64 -w0 "$RUNNER_TEMP/manifest.sig" > TokenVault-update.json.sig
       - uses: softprops/action-gh-release@v2
         with:
-          files: TokenVault-win-x64.zip
+          files: |
+            TokenVault-win-x64.zip
+            TokenVault-update.json
+            TokenVault-update.json.sig
           generate_release_notes: true

@@ -15,19 +15,74 @@ public interface IConnectionAuthenticator
 // Asks the player (in Token Vault's own window, which the sandboxed game cannot click) whether a join is theirs.
 public delegate Task<bool> JoinApproval(ServerEntry server, CancellationToken ct);
 
+// Shared by every broker of one game session: one game connection at a time (across all servers), a reconnect limit,
+// and the player's "Disconnect" button for the connection that is live.
+public sealed class BrokerGate
+{
+    private readonly SemaphoreSlim slot = new(1, 1);
+    private readonly object sync = new();
+    private long lastLogin;
+    private CancellationTokenSource? active;
+
+    public bool TryEnter() => slot.Wait(0);
+    public void Exit() { lock (sync) active = null; slot.Release(); }
+
+    // At most one sign-in every 3 seconds, across all servers.
+    public bool TryStartLogin()
+    {
+        lock (sync)
+        {
+            long now = Environment.TickCount64;
+            if (lastLogin != 0 && now - lastLogin < 3000) return false;
+            lastLogin = now;
+            return true;
+        }
+    }
+
+    internal void SetActive(CancellationTokenSource? relay) { lock (sync) active = relay; }
+
+    // Ends the live server connection (the game shows "connection lost"). Returns false when none is live.
+    public bool DisconnectActive()
+    {
+        lock (sync)
+        {
+            if (active is null) return false;
+            active.Cancel();
+            return true;
+        }
+    }
+}
+
+// Decides whether a loopback connection to a broker comes from the game's own process. Loopback is shared by every
+// program and every Windows user on the PC, and a broker hands whoever connects an authenticated session, so anything
+// that isn't the game is refused. Until the game is running (and whenever the check can't be made) nothing is accepted.
+public sealed class ConnectionOrigin
+{
+    private volatile Func<IPEndPoint, IPEndPoint, bool>? isGame;
+    public void Allow(Func<IPEndPoint, IPEndPoint, bool> check) => isGame = check;
+    public bool IsGame(EndPoint? client, EndPoint? server)
+    {
+        try { return client is IPEndPoint c && server is IPEndPoint s && isGame is { } check && check(c, s); }
+        catch (Exception) { return false; }
+    }
+}
+
+public sealed class SessionExpiredException() : Exception("The game session's sign-in has expired.");
+
 // One broker per server the player added in Token Vault. It authenticates only connections to that server, only
-// one game connection at a time across all brokers (shared slot), and optionally only after the player approves.
+// one game connection at a time across all brokers (shared gate), and optionally only after the player approves.
+// origin: when set, only connections from the game process are served. joinDeadline: no new sign-ins after it
+// (connections already playing are not cut; they end when the game or Token Vault stops).
 // protocol: the client's network protocol (Minecraft 1.8 = 47 ... 26.1.2 = 775). The login packets differ by version:
 //   1.16 (735)    Login Success carries the UUID as 16 bytes instead of a string
 //   1.19 (759/760) Encryption Response has a "has verify token" flag
 //   1.20.2 (764)  the client acknowledges Login Success before the game starts
 //   1.20.5 (766)  Encryption Request says whether the server authenticates; cookie requests exist
 public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
-    IConnectionAuthenticator authenticator, Action<string> audit, JoinApproval? approve = null, SemaphoreSlim? slot = null,
-    int protocol = 775)
+    IConnectionAuthenticator authenticator, Action<string> audit, JoinApproval? approve = null, BrokerGate? gate = null,
+    int protocol = 775, ConnectionOrigin? origin = null, DateTimeOffset? joinDeadline = null)
 {
-    private readonly SemaphoreSlim oneConnection = slot ?? new(1, 1);
-    private long lastLogin;
+    private readonly BrokerGate gate = gate ?? new();
 
     // Loopback only, on a port Windows picks, so nothing collides with other software.
     public static TcpListener Listen()
@@ -59,6 +114,11 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
     {
         using (client)
         {
+            if (origin is not null && !origin.IsGame(client.Client.RemoteEndPoint, client.Client.LocalEndPoint))
+            {
+                audit("broker:foreign:" + target.Host);
+                return;
+            }
             client.NoDelay = true; // small game packets go out at once (Nagle would hold them back and add ping)
             try { await HandleAsync(client.GetStream(), ct); }
             catch (OperationCanceledException) { }
@@ -84,20 +144,29 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
         PacketIO.RequireEnd(handshake, offset);
         if (state == 1) { await StatusAsync(downstream, marker, ct); return; }
         if (state != 2) throw new InvalidDataException("Unsupported intention (including transfer).");
-        if (!await oneConnection.WaitAsync(0, ct))
+        if (!gate.TryEnter())
         {
             audit("broker:busy:" + target.Host);
             throw new InvalidOperationException("A game connection is already active.");
         }
         try
         {
-            long now = Environment.TickCount64;
-            if (now - lastLogin < 3000 && lastLogin != 0) throw new InvalidOperationException("Reconnect rate limited.");
-            lastLogin = now;
             // The game's Login Start is checked (it must be this account) and then forwarded as-is, so version-specific
             // fields such as 1.19's signed profile key reach the server unchanged.
             var start = await PacketIO.ReadAsync(downstream, -1, ct);
             CheckLoginStart(start);
+            if (!gate.TryStartLogin())
+            {
+                audit("broker:ratelimited:" + target.Host);
+                await Disconnect(downstream, "Token Vault: you reconnected too quickly. Wait a few seconds and try again.", -1, lifetime);
+                return;
+            }
+            if (joinDeadline is { } deadline && DateTimeOffset.UtcNow >= deadline)
+            {
+                audit("broker:expired:" + target.Host);
+                await Disconnect(downstream, "Token Vault: this game session's sign-in has expired. Close Minecraft and press Play again.", -1, lifetime);
+                return;
+            }
             if (approve is not null)
             {
                 bool approved;
@@ -110,8 +179,7 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
                 if (!approved)
                 {
                     audit("broker:blocked:" + target.Host);
-                    string reason = System.Text.Json.JsonSerializer.Serialize(new { text = "Token Vault blocked this join. Approve it in the Token Vault window to sign in." });
-                    await PacketIO.WriteAsync(downstream, PacketIO.Packet(0, s => PacketIO.WriteString(s, reason)), -1, lifetime);
+                    await Disconnect(downstream, "Token Vault blocked this join. Approve it in the Token Vault window to sign in.", -1, lifetime);
                     return;
                 }
                 audit("broker:approved:" + target.Host);
@@ -200,11 +268,21 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
                         }
                         loginDeadline.CancelAfter(Timeout.InfiniteTimeSpan);
                         using var relay = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
-                        Task outgoing = downstream.CopyToAsync(upstream, 65536, relay.Token);
-                        Task incoming = upstream.CopyToAsync(downstream, 65536, relay.Token);
-                        await Task.WhenAny(outgoing, incoming);
-                        relay.Cancel();
-                        try { await Task.WhenAll(outgoing, incoming); } catch (OperationCanceledException) { }
+                        gate.SetActive(relay);
+                        audit("broker:connected:" + target.Host);
+                        try
+                        {
+                            Task outgoing = downstream.CopyToAsync(upstream, 65536, relay.Token);
+                            Task incoming = upstream.CopyToAsync(downstream, 65536, relay.Token);
+                            await Task.WhenAny(outgoing, incoming);
+                            relay.Cancel();
+                            try { await Task.WhenAll(outgoing, incoming); } catch (OperationCanceledException) { } catch (IOException) { }
+                        }
+                        finally
+                        {
+                            gate.SetActive(null);
+                            audit("broker:disconnected:" + target.Host);
+                        }
                         return;
                     }
                     if ((id == 4 && protocol >= 393) || (id == 5 && protocol >= 766))
@@ -228,17 +306,19 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
                 // Tell the player why in the game's own disconnect screen instead of letting it time out.
                 string reason = FailureReason(ex);
                 audit("broker:failed:" + target.Host + ":" + ex.GetType().Name);
-                try
-                {
-                    string json = JsonSerializer.Serialize(new { text = "Token Vault: " + reason });
-                    await PacketIO.WriteAsync(downstream, PacketIO.Packet(0, s => PacketIO.WriteString(s, json)), compression, lifetime);
-                }
+                try { await Disconnect(downstream, "Token Vault: " + reason, compression, lifetime); }
                 catch (Exception) when (!lifetime.IsCancellationRequested) { }
                 throw;
             }
             finally { encrypted?.Dispose(); }
         }
-        finally { oneConnection.Release(); }
+        finally { gate.Exit(); }
+    }
+
+    private static Task Disconnect(Stream downstream, string text, int compression, CancellationToken ct)
+    {
+        string json = JsonSerializer.Serialize(new { text });
+        return PacketIO.WriteAsync(downstream, PacketIO.Packet(0, s => PacketIO.WriteString(s, json)), compression, ct);
     }
 
     // Plain-language reasons. No server data or exception text: only the kind of failure.
@@ -247,6 +327,7 @@ public sealed class ConnectionBroker(ServerEntry target, PlayerProfile profile,
         SocketException or IOException => $"couldn't connect to {target.Host}. The server may be offline or the address may be wrong.",
         OperationCanceledException => $"{target.Host} didn't answer in time.",
         MojangJoinException mojang => mojang.Message,
+        SessionExpiredException => "this game session's sign-in has expired. Close Minecraft and press Play again.",
         HttpRequestException => "couldn't reach Minecraft's sign-in service. Check your internet connection.",
         _ when ex.Message == "Upstream must require online authentication." || ex.Message == "Offline-mode upstreams are refused." =>
             $"{target.Host} is an offline-mode server. Token Vault only signs in to servers that verify accounts.",

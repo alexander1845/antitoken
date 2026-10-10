@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace TokenVault.Packs;
 
@@ -33,6 +34,44 @@ public sealed record ModInfo(string Name, string? Version, string File, long Siz
         if (string.IsNullOrWhiteSpace(s)) return null;
         s = new string(s.Where(c => !char.IsControl(c)).ToArray()).Trim();
         return s.Length > 80 ? s[..80] : s;
+    }
+
+    // What a folder of loose mods was made for: the loader most of them declare and the Minecraft version they most
+    // often name. Null when the mods don't say (or disagree on the loader). Untrusted input, bounded like Read.
+    public static (string? Minecraft, string Loader)? Detect(string modsDirectory)
+    {
+        if (!Directory.Exists(modsDirectory)) return null;
+        var loaders = new Dictionary<string, int>();
+        var versions = new Dictionary<string, int>();
+        foreach (string jar in Directory.EnumerateFiles(modsDirectory, "*.jar").Take(500))
+        {
+            try
+            {
+                if ((System.IO.File.GetAttributes(jar) & FileAttributes.ReparsePoint) != 0) continue;
+                using var zip = ZipFile.OpenRead(jar);
+                string? loader = null, text = null;
+                foreach (var (entry, name) in new[] { ("fabric.mod.json", "fabric"), ("quilt.mod.json", "quilt"),
+                             ("META-INF/neoforge.mods.toml", "neoforge"), ("META-INF/mods.toml", "forge") })
+                    if (zip.GetEntry(entry) is { Length: < 512 * 1024 } found)
+                    {
+                        using var reader = new StreamReader(found.Open());
+                        text = reader.ReadToEnd(); loader = name; break;
+                    }
+                if (loader is null || text is null) continue;
+                loaders[loader] = loaders.GetValueOrDefault(loader) + 1;
+                // fabric/quilt: "minecraft": "~1.20.1" / ">=1.21 <1.22"; forge: modId="minecraft" versionRange="[1.20.1,1.21)"
+                var match = loader is "fabric" or "quilt"
+                    ? Regex.Match(text, "\"minecraft\"\\s*:\\s*\\[?\\s*\"[^0-9\"]*(\\d+\\.\\d+(?:\\.\\d+)?)", RegexOptions.None, TimeSpan.FromSeconds(1))
+                    : Regex.Match(text, "modId\\s*=\\s*\"minecraft\"[^\\[]*?versionRange\\s*=\\s*\"[\\[(]?(\\d+\\.\\d+(?:\\.\\d+)?)", RegexOptions.None, TimeSpan.FromSeconds(1));
+                if (match.Success) versions[match.Groups[1].Value] = versions.GetValueOrDefault(match.Groups[1].Value) + 1;
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or RegexMatchTimeoutException) { }
+        }
+        if (loaders.Count == 0) return null;
+        var top = loaders.OrderByDescending(p => p.Value).ToList();
+        if (top.Count > 1 && top[1].Value * 4 > top[0].Value) return null; // mixed loaders: don't guess
+        string? minecraft = versions.Count == 0 ? null : versions.OrderByDescending(p => p.Value).First().Key;
+        return (minecraft, top[0].Key);
     }
 
     public static IReadOnlyList<ModInfo> List(string modsDirectory)
