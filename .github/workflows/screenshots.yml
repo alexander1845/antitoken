@@ -1,0 +1,46 @@
+name: UI screenshots
+# Builds the app, runs it on a clean Windows runner, clicks through the first-run screens and main pages, and saves a
+# screenshot of each (scripts/Capture-Screenshots.ps1). Fails if the app doesn't start or crashes. On a push, changed
+# screenshots are committed to docs/screenshots, which the README shows.
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'src/TokenVault.App/**'
+      - 'scripts/Capture-Screenshots.ps1'
+      - '.github/workflows/screenshots.yml'
+permissions:
+  contents: read
+concurrency:
+  group: screenshots-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  screenshots:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet publish src/TokenVault.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
+      - name: Run Token Vault and take screenshots
+        shell: pwsh
+        run: ./scripts/Capture-Screenshots.ps1 -Exe out/TokenVault.exe -OutDir docs/screenshots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: docs/screenshots
+      - name: Commit changed screenshots
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add docs/screenshots
+          if git diff --cached --quiet; then echo "Screenshots unchanged."; exit 0; fi
+          git commit -m "Update UI screenshots"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"

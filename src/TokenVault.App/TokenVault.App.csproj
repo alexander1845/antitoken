@@ -7,7 +7,13 @@
     <AssemblyName>TokenVault</AssemblyName>
     <RootNamespace>TokenVault.App</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\TokenVault.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <None Remove="Assets\**" />
+    <Resource Include="Assets\TokenVault.ico" />
+    <Resource Include="Assets\TokenVault.png" />
+  </ItemGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../TokenVault.Core/TokenVault.Core.csproj" />

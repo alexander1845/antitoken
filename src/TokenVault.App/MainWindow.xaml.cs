@@ -31,11 +31,17 @@ public partial class MainWindow : Window
     private Telemetry telemetry = new(new System.Net.Http.HttpClient(), () => false, "", "", "");
     private UpdateInfo? update;
     private bool updateInstalled;
+    private bool launching;
+    private int onboardingStep;
+    private readonly System.Windows.Threading.DispatcherTimer toastTimer = new() { Interval = TimeSpan.FromSeconds(4) };
+    private System.Windows.Media.Animation.Storyboard? pulse;
 
     public MainWindow()
     {
         InitializeComponent();
-        SourceInitialized += (_, _) => App.MatchTitleBar(this);
+        SourceInitialized += (_, _) => { App.MatchTitleBar(this); App.RoundCorners(this); };
+        StateChanged += (_, _) => FitMaximized();
+        toastTimer.Tick += (_, _) => { toastTimer.Stop(); if (ProgressArea.Visibility != Visibility.Visible) Toast.Visibility = Visibility.Collapsed; };
         Loaded += (_, _) => Initialize();
         Closing += OnClosing;
         PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape && Overlay.Visibility == Visibility.Visible) { DialogSecondary_Click(this, e); e.Handled = true; } };
@@ -77,13 +83,13 @@ public partial class MainWindow : Window
         RefreshSecurity();
         RefreshAccount();
         SetBusy(false);
-        Status("Ready");
+        if (!settings.OnboardingCompleted) ShowOnboarding();
         _ = AfterStartAsync();
     }
 
     private async Task AfterStartAsync()
     {
-        if (settings.ShareUsageStatistics is null && telemetry.Configured)
+        if (settings.OnboardingCompleted && settings.ShareUsageStatistics is null && telemetry.Configured)
         {
             bool share = await AskAsync("Help improve Token Vault?",
                 "Token Vault can send anonymous usage statistics: which features are used, which Minecraft versions and loaders, and whether launches and joins work.\n\n" +
@@ -140,13 +146,19 @@ public partial class MainWindow : Window
         SetBusy(true);
         SetPlayButton(stop: true);
         HideBanner();
+        launching = true;
+        LaunchStep(0, "Getting ready", "Checking that everything is in place.", null);
         try
         {
-            if (sandbox.IsSetUp() == false && !await ApproveSetupAsync()) { Status("Play needs the one-time approval."); return; }
+            if (sandbox.IsSetUp() == false && !await ApproveSetupAsync()) { ShowToast("Playing needs the one-time sandbox setup."); return; }
 
             // Everything slow runs off the UI thread so the window stays responsive.
-            var progress = new Progress<InstallProgress>(p => Status(p.Stage, p.Fraction));
-            Status("Checking game files…", 0);
+            var progress = new Progress<InstallProgress>(p =>
+            {
+                string[] part = p.Stage.Split(" — ", 2);
+                LaunchStep(0, part[0].TrimEnd('…'), part.Length > 1 ? part[1] : "This only happens the first time, or after an update.", p.Fraction is > 0 and < 1 ? p.Fraction : null);
+            });
+            LaunchStep(0, "Checking game files", $"Minecraft {instance.MinecraftVersion}, {GameInstaller.LoaderName(instance.Loader)}", null);
             using var http = GameInstaller.CreateHttp();
             var target = instance.Apply(settings);
             var box = sandbox;
@@ -157,7 +169,9 @@ public partial class MainWindow : Window
                 InstanceStore.Save(instances);
             }
 
+            LaunchStep(1, "Signing in", "Using your saved Microsoft sign-in.", null);
             var account = await EnsureSignedInAsync(cts.Token);
+            LaunchStep(2, "Starting Minecraft", $"Starting the game in the sandbox as {account.Profile.Name}.", null);
             InstanceStore.CreateFolder(instance);
             var launch = instance.Apply(settings, installed);
             string clientJar = Path.Combine(launch.MinecraftDirectory, "versions", launch.MinecraftVersion, launch.MinecraftVersion + ".jar");
@@ -166,26 +180,27 @@ public partial class MainWindow : Window
             var origin = new ConnectionOrigin();
             await using var session = await Task.Run(() => VaultSession.StartAsync(launch, account, AppPaths.AuditLog, cts.Token, Observe, ApproveJoinAsync, origin));
             liveSession = session;
-            Status($"Starting {instance.Name}…", tone: "Accent");
             var game = sandbox;
             var started = DateTime.UtcNow;
             telemetry.Track("game_launched", new Dictionary<string, string> { ["minecraft_version"] = instance.MinecraftVersion, ["loader"] = instance.Loader });
             int code = await Task.Run(() => JavaLauncher.LaunchAsync(launch, session.Descriptor, game, line =>
             {
                 Log(line);
-                if (line.StartsWith("Starting Minecraft", StringComparison.Ordinal)) Status($"Playing {instance.Name} as {account.Profile.Name}", tone: "Accent");
+                if (line.StartsWith("Starting Minecraft", StringComparison.Ordinal))
+                    Dispatcher.BeginInvoke(() => LaunchPlaying(instance.Name, account.Profile.Name));
             }, cts.Token, process => origin.Allow((client, server) => LoopbackPeers.OwnerOf(client, server) is int pid && process.Contains(pid))));
             telemetry.Track("game_exited", new Dictionary<string, string>
             {
                 ["result"] = code == 0 ? "ok" : "error", ["minutes"] = ((int)(DateTime.UtcNow - started).TotalMinutes).ToString(System.Globalization.CultureInfo.InvariantCulture)
             });
-            if (code == 0) Status("Ready");
-            else Error($"Minecraft closed unexpectedly (exit code {code}). Its log is in the instance folder under logs\\latest.log.");
+            if (code != 0) Error($"Minecraft closed unexpectedly (exit code {code}). Its log is in the instance folder under logs\\latest.log.");
         }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested) { Status("Game stopped"); }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested) { ShowToast("Game stopped"); }
         catch (Exception ex) { Error(ex); }
         finally
         {
+            launching = false;
+            HideLaunch();
             running = null;
             liveSession = null;
             ConnectionBar.Visibility = Visibility.Collapsed;
@@ -198,10 +213,71 @@ public partial class MainWindow : Window
         }
     }
 
+    // ----- Launch progress card -----
+
+    // step: 0 game files, 1 sign-in, 2 start. fraction: null shows a pulsing bar (working, length unknown).
+    private void LaunchStep(int step, string title, string detail, double? fraction)
+    {
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => LaunchStep(step, title, detail, fraction)); return; }
+        if (!launching) return;
+        LaunchPanel.Visibility = Visibility.Visible;
+        var dots = new[] { (Step0Dot, Step0Glyph, Step0Label), (Step1Dot, Step1Glyph, Step1Label), (Step2Dot, Step2Glyph, Step2Label) };
+        for (int i = 0; i < dots.Length; i++)
+        {
+            var (dot, glyph, label) = dots[i];
+            bool done = i < step, current = i == step;
+            dot.Background = done ? Brush("Accent") : Brushes.Transparent;
+            dot.BorderBrush = done || current ? Brush("Accent") : Brush("LineStrong");
+            glyph.Text = done ? "\uE73E" : (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            glyph.FontFamily = done ? (FontFamily)FindResource("IconFont") : (FontFamily)FindResource("UiFont");
+            glyph.Foreground = done ? Brush("OnAccent") : current ? Brush("Accent") : Brush("Tertiary");
+            label.Foreground = done || current ? Brush("Text") : Brush("Tertiary");
+            label.FontWeight = current ? FontWeights.SemiBold : FontWeights.Normal;
+        }
+        LaunchTitle.Text = title;
+        LaunchDetail.Text = detail;
+        LaunchProgress.Visibility = Visibility.Visible;
+        if (fraction is double f) { StopPulse(); LaunchProgress.Value = Math.Clamp(f, 0, 1); }
+        else StartPulse();
+    }
+
+    private void LaunchPlaying(string instanceName, string player)
+    {
+        if (!launching) return;
+        LaunchStep(3, "Playing " + instanceName, $"Minecraft is running in the sandbox as {player}. Close the game or press Stop to end it.", 1);
+        LaunchProgress.Visibility = Visibility.Collapsed;
+    }
+
+    private void HideLaunch()
+    {
+        StopPulse();
+        LaunchPanel.Visibility = Visibility.Collapsed;
+    }
+
+    private void StartPulse()
+    {
+        LaunchProgress.Value = 1;
+        if (pulse is not null) return;
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0.25, TimeSpan.FromMilliseconds(900)) { AutoReverse = true, RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever };
+        System.Windows.Media.Animation.Storyboard.SetTarget(fade, LaunchProgress);
+        System.Windows.Media.Animation.Storyboard.SetTargetProperty(fade, new PropertyPath(OpacityProperty));
+        pulse = new System.Windows.Media.Animation.Storyboard();
+        pulse.Children.Add(fade);
+        pulse.Begin(this, true);
+    }
+
+    private void StopPulse()
+    {
+        pulse?.Stop(this);
+        pulse = null;
+        LaunchProgress.Opacity = 1;
+    }
+
     private void SetPlayButton(bool stop)
     {
         PlayButton.Style = (Style)FindResource(stop ? typeof(Button) : "Primary");
         PlayLabel.Text = stop ? "Stop" : "Play";
+        System.Windows.Automation.AutomationProperties.SetName(PlayButton, PlayLabel.Text);
         PlayIcon.Text = stop ? "\uE71A" : "\uE768";
         PlayButton.IsEnabled = stop || (!busy && sandbox is not null);
     }
@@ -220,6 +296,139 @@ public partial class MainWindow : Window
         Log(ok ? "Sandbox setup approved." : "Sandbox setup was not approved.");
         RefreshSecurity();
         return ok;
+    }
+
+    // ===================== Window =====================
+
+    private void Minimize_Click(object sender, RoutedEventArgs e) => SystemCommands.MinimizeWindow(this);
+    private void Maximize_Click(object sender, RoutedEventArgs e)
+    {
+        if (WindowState == WindowState.Maximized) SystemCommands.RestoreWindow(this);
+        else SystemCommands.MaximizeWindow(this);
+    }
+    private void Close_Click(object sender, RoutedEventArgs e) => SystemCommands.CloseWindow(this);
+
+    // A maximised window without a system frame reaches past the screen edges by the resize border; pad it back in.
+    private void FitMaximized()
+    {
+        bool max = WindowState == WindowState.Maximized;
+        var frame = SystemParameters.WindowResizeBorderThickness;
+        Root.Margin = max ? new Thickness(frame.Left + 4, frame.Top + 4, frame.Right + 4, frame.Bottom + 4) : new Thickness(0);
+        MaximizeButton.Content = max ? "\uE923" : "\uE922";
+        MaximizeButton.ToolTip = max ? "Restore" : "Maximize";
+    }
+
+    // ===================== First run =====================
+
+    private StackPanel[] OnboardingSteps => [WelcomeStep, SafetyStep, SandboxStep, SignInStep, DoneStep];
+
+    private void ShowOnboarding()
+    {
+        Onboarding.Visibility = Visibility.Visible;
+        StatisticsCard.Visibility = telemetry.Configured ? Visibility.Visible : Visibility.Collapsed;
+        OnboardingStatistics.IsChecked = settings.ShareUsageStatistics == true;
+        GoToStep(0);
+    }
+
+    private void GoToStep(int step)
+    {
+        onboardingStep = Math.Clamp(step, 0, OnboardingSteps.Length - 1);
+        var steps = OnboardingSteps;
+        for (int i = 0; i < steps.Length; i++) steps[i].Visibility = i == onboardingStep ? Visibility.Visible : Visibility.Collapsed;
+        var current = steps[onboardingStep];
+        current.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(220)));
+        int dot = 0;
+        foreach (var child in OnboardingDots.Children.OfType<System.Windows.Shapes.Ellipse>())
+            child.Fill = Brush(dot++ == onboardingStep ? "Accent" : "LineStrong");
+        OnboardingBack.Visibility = onboardingStep > 0 && onboardingStep < steps.Length - 1 ? Visibility.Visible : Visibility.Collapsed;
+        if (current == SignInStep && identity is { } signedIn) ShowSignInResult($"Signed in as {signedIn.Profile.Name}.", good: true);
+        if (current == DoneStep)
+            DoneDetail.Text = identity is null && !File.Exists(AppPaths.RefreshCache)
+                ? "Pick an instance in your library and press Play. Token Vault asks you to sign in the first time."
+                : "Pick an instance in your library and press Play, or drop a modpack onto the window.";
+    }
+
+    private void OnboardingNext_Click(object sender, RoutedEventArgs e)
+    {
+        int next = onboardingStep + 1;
+        if (next == 2 && sandbox?.IsSetUp() == true) next++; // already set up: nothing to ask
+        GoToStep(next);
+    }
+
+    private void OnboardingBack_Click(object sender, RoutedEventArgs e)
+    {
+        int back = onboardingStep - 1;
+        if (back == 2 && sandbox?.IsSetUp() == true) back--;
+        GoToStep(back);
+    }
+
+    private async void OnboardingSandbox_Click(object sender, RoutedEventArgs e)
+    {
+        if (sandbox is null) { ShowSandboxResult("Windows couldn't create the sandbox on this PC, so the game can't start. You can still look around.", good: false); return; }
+        bool ok;
+        try { ok = await sandbox.RequestSetupAsync(); }
+        catch (Exception ex) { ShowSandboxResult(Describe(ex), good: false); return; }
+        Log(ok ? "Sandbox setup approved." : "Sandbox setup was not approved.");
+        if (!ok) { ShowSandboxResult("Windows didn't give its OK. You can do this later from the Security page.", good: false); return; }
+        ShowSandboxResult("Done. The sandbox is ready.", good: true);
+        RefreshSecurity();
+        await Task.Delay(700);
+        if (onboardingStep == 2) GoToStep(3);
+    }
+
+    private void ShowSandboxResult(string text, bool good)
+    {
+        SandboxResult.Text = text;
+        SandboxResult.Foreground = Brush(good ? "Good" : "Bad");
+        SandboxResult.Visibility = Visibility.Visible;
+    }
+
+    private void ShowSignInResult(string text, bool good)
+    {
+        SignInResult.Text = text;
+        SignInResult.Foreground = Brush(good ? "Good" : "Bad");
+        SignInResult.Visibility = Visibility.Visible;
+    }
+
+    private void OnboardingCode_Click(object sender, RoutedEventArgs e)
+    {
+        settings.UseDeviceCode = true;
+        TrySaveSettings();
+        OnboardingSignIn_Click(sender, e);
+    }
+
+    private async void OnboardingSignIn_Click(object sender, RoutedEventArgs e)
+    {
+        if (busy) return;
+        SetBusy(true);
+        OnboardingSignInButton.IsEnabled = false;
+        ShowSignInResult(settings.UseDeviceCode ? "Getting a sign-in code from Microsoft…" : "Finish signing in in your browser…", good: true);
+        try
+        {
+            var account = await EnsureSignedInAsync(CancellationToken.None);
+            ShowSignInResult($"Signed in as {account.Profile.Name}.", good: true);
+            await Task.Delay(700);
+            if (onboardingStep == 3) GoToStep(4);
+        }
+        catch (OperationCanceledException) { ShowSignInResult("Sign-in was canceled.", good: false); }
+        catch (Exception ex) { ShowSignInResult(Describe(ex), good: false); }
+        finally { OnboardingSignInButton.IsEnabled = true; SetBusy(false); RefreshAccount(); }
+    }
+
+    private void OnboardingFinish_Click(object sender, RoutedEventArgs e)
+    {
+        if (telemetry.Configured)
+        {
+            bool share = OnboardingStatistics.IsChecked == true;
+            if (share && settings.ShareUsageStatistics != true) { settings.ShareUsageStatistics = true; telemetry.Track("consent_given"); }
+            else settings.ShareUsageStatistics = share;
+        }
+        settings.OnboardingCompleted = true;
+        TrySaveSettings();
+        Onboarding.BeginAnimation(OpacityProperty, null);
+        Onboarding.Visibility = Visibility.Collapsed;
+        RefreshSecurity();
+        RefreshAccount();
     }
 
     // ===================== Account =====================
@@ -852,22 +1061,30 @@ public partial class MainWindow : Window
         SignInButton.IsEnabled = idle;
         SignOutButton.IsEnabled = idle;
         ForgetButton.IsEnabled = idle;
-        if (idle) ProgressArea.Visibility = Visibility.Collapsed;
+        if (idle && ProgressArea.Visibility == Visibility.Visible) { ProgressArea.Visibility = Visibility.Collapsed; Toast.Visibility = Visibility.Collapsed; }
     }
 
+    // Short confirmations appear as a toast in the corner and fade on their own; while the game is starting, sign-in
+    // messages go to the launch card instead.
     private void Status(string text, double? fraction = null, string? tone = null)
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => Status(text, fraction, tone)); return; }
+        Log(text);
+        if (launching && fraction is null) { LaunchDetail.Text = text; return; }
         StatusText.Text = text;
-        StatusDot.Fill = Brush(tone ?? (busy ? "Accent" : "Good"));
+        StatusDot.Fill = Brush(tone ?? "Good");
         ProgressArea.Visibility = fraction is null ? Visibility.Collapsed : Visibility.Visible;
         if (fraction is double f)
         {
             Progress.Value = Math.Clamp(f, 0, 1);
             ProgressText.Text = $"{Math.Clamp(f, 0, 1):P0}";
         }
-        Log(text);
+        Toast.Visibility = Visibility.Visible;
+        toastTimer.Stop();
+        toastTimer.Start();
     }
+
+    private void ShowToast(string text) => Status(text);
 
     private void Log(string text)
     {
@@ -890,7 +1107,7 @@ public partial class MainWindow : Window
     {
         BannerText.Text = message;
         Banner.Visibility = Visibility.Visible;
-        Status("Something went wrong", tone: "Bad");
+        Toast.Visibility = Visibility.Collapsed;
         Log("Error: " + message);
     }
 

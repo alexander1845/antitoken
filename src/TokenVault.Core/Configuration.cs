@@ -28,6 +28,8 @@ public sealed class Configuration
     public bool AllowChatSigning { get; set; } = true;
     // Look for a newer Token Vault on GitHub and install it after its signature checks out.
     public bool CheckForUpdates { get; set; } = true;
+    // The first-run introduction (security, sandbox setup, sign-in) has been shown and finished.
+    public bool OnboardingCompleted { get; set; }
     // Anonymous usage statistics. null: the player hasn't been asked yet (treated as off).
     public bool? ShareUsageStatistics { get; set; }
     // Random, per-install identifier for usage statistics. Never derived from the account or the PC.

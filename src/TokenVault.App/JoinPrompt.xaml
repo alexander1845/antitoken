@@ -1,18 +1,16 @@
 <Window x:Class="TokenVault.App.JoinPrompt"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Token Vault — approve join" Width="440" SizeToContent="Height" ResizeMode="NoResize"
+        Title="Token Vault — approve join" Icon="Assets/TokenVault.ico" Width="440" SizeToContent="Height" ResizeMode="NoResize"
         WindowStyle="None" Topmost="True" ShowInTaskbar="True" WindowStartupLocation="Manual"
         Background="{DynamicResource Surface}" Foreground="{DynamicResource Text}" UseLayoutRounding="True"
         FontFamily="{StaticResource UiFont}" FontSize="13.5" TextOptions.TextFormattingMode="Display">
-  <Border BorderBrush="{DynamicResource LineStrong}" BorderThickness="1">
+  <Border BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="8">
     <StackPanel>
       <Rectangle Height="3" Fill="{DynamicResource Accent}"/>
       <StackPanel Margin="26,22,26,24">
         <StackPanel Orientation="Horizontal">
-          <Border Width="28" Height="28" Background="{DynamicResource Accent}">
-            <TextBlock Text="&#xEA18;" Style="{StaticResource Icon}" FontSize="14" Foreground="{DynamicResource OnAccent}"/>
-          </Border>
+          <Image Source="Assets/TokenVault.png" Width="24" Height="24" RenderOptions.BitmapScalingMode="HighQuality"/>
           <TextBlock Text="Token Vault" FontWeight="SemiBold" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource Secondary}"/>
         </StackPanel>
 

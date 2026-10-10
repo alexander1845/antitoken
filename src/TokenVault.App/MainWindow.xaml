@@ -1,30 +1,29 @@
 <Window x:Class="TokenVault.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Token Vault" Width="1180" Height="760" MinWidth="940" MinHeight="580"
+        Title="Token Vault" Width="1180" Height="760" MinWidth="940" MinHeight="600" Icon="Assets/TokenVault.ico"
         WindowStartupLocation="CenterScreen" AllowDrop="True" UseLayoutRounding="True"
         Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="13.5"
         TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType">
+  <!-- Token Vault draws its own title bar; Windows still handles dragging, snapping, resizing and the system menu. -->
+  <WindowChrome.WindowChrome>
+    <WindowChrome CaptionHeight="40" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False"/>
+  </WindowChrome.WindowChrome>
   <Grid x:Name="Root">
     <Grid.RowDefinitions>
+      <RowDefinition Height="40"/>
       <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="224"/>
       <ColumnDefinition Width="*"/>
     </Grid.ColumnDefinitions>
 
-    <!-- ================= Navigation rail ================= -->
-    <Border Grid.Column="0" Background="{DynamicResource Nav}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0">
-      <DockPanel>
-        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="22,22,16,24">
-          <Border Width="28" Height="28" Background="{DynamicResource Accent}">
-            <TextBlock Text="&#xEA18;" Style="{StaticResource Icon}" FontSize="15" Foreground="{DynamicResource OnAccent}"/>
-          </Border>
-          <TextBlock Text="Token Vault" FontFamily="{StaticResource DisplayFont}" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Margin="10,0,0,0"/>
-        </StackPanel>
+    <!-- ================= Navigation rail (reaches up into the title bar) ================= -->
+    <Border Grid.RowSpan="2" Background="{DynamicResource Nav}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0"/>
+    <Border Grid.Row="1" Grid.Column="0">
+      <DockPanel Margin="0,10,0,0">
 
         <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="16,14,16,16">
           <Grid>
@@ -46,7 +45,7 @@
         <StackPanel>
           <RadioButton x:Name="NavLibrary" GroupName="Nav" Style="{StaticResource NavItem}" Tag="&#xE8F1;" Content="Library" IsChecked="True" Checked="Nav_Checked"/>
           <RadioButton x:Name="NavServers" GroupName="Nav" Style="{StaticResource NavItem}" Tag="&#xE774;" Content="Servers" Checked="Nav_Checked"/>
-          <RadioButton x:Name="NavSecurity" GroupName="Nav" Style="{StaticResource NavItem}" Tag="&#xEA18;" Checked="Nav_Checked">
+          <RadioButton x:Name="NavSecurity" GroupName="Nav" Style="{StaticResource NavItem}" Tag="&#xEA18;" Checked="Nav_Checked" AutomationProperties.Name="Security">
             <StackPanel Orientation="Horizontal">
               <TextBlock Text="Security"/>
               <Border x:Name="SecurityBadge" Width="7" Height="7" Background="{DynamicResource Warn}" Margin="8,1,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
@@ -58,7 +57,7 @@
     </Border>
 
     <!-- ================= Content ================= -->
-    <Grid Grid.Column="1">
+    <Grid Grid.Row="1" Grid.Column="1">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>
@@ -144,10 +143,11 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
           </Grid.RowDefinitions>
 
-          <Grid Margin="36,32,36,24">
+          <Grid Margin="36,28,36,24">
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="Auto"/>
               <ColumnDefinition Width="*"/>
@@ -171,7 +171,7 @@
               </ItemsControl>
             </StackPanel>
             <StackPanel Grid.Column="2" VerticalAlignment="Center">
-              <Button x:Name="PlayButton" Style="{StaticResource Primary}" Width="168" Height="46" FontSize="15" Click="Play_Click" IsDefault="True">
+              <Button x:Name="PlayButton" Style="{StaticResource Primary}" Width="168" Height="46" FontSize="15" Click="Play_Click" IsDefault="True" AutomationProperties.Name="Play">
                 <StackPanel Orientation="Horizontal">
                   <TextBlock x:Name="PlayIcon" Text="&#xE768;" FontFamily="{StaticResource IconFont}" FontSize="14" VerticalAlignment="Center" Margin="0,1,10,0"/>
                   <TextBlock x:Name="PlayLabel" Text="Play" VerticalAlignment="Center"/>
@@ -186,8 +186,42 @@
           </Grid>
 
           <!-- Files a CurseForge pack could not download automatically -->
-          <Border x:Name="MissingPanel" Grid.Row="1" Visibility="Collapsed" Margin="36,0,36,20" Background="{DynamicResource WarnTint}"
-                  BorderBrush="{DynamicResource Warn}" BorderThickness="3,0,0,0" Padding="16,12">
+          <!-- Launch progress: game files, sign-in, start, then "playing" -->
+          <Border x:Name="LaunchPanel" Grid.Row="1" Style="{StaticResource Card}" Margin="36,0,36,20" Padding="22,18" Visibility="Collapsed">
+            <StackPanel>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal">
+                  <Border x:Name="Step0Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1.5">
+                    <TextBlock x:Name="Step0Glyph" Text="1" FontSize="11.5" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                  </Border>
+                  <TextBlock x:Name="Step0Label" Text="Game files" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+                <Rectangle Grid.Column="1" Height="1.5" Fill="{DynamicResource Line}" Margin="14,0" VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                  <Border x:Name="Step1Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1.5">
+                    <TextBlock x:Name="Step1Glyph" Text="2" FontSize="11.5" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                  </Border>
+                  <TextBlock x:Name="Step1Label" Text="Sign-in" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+                <Rectangle Grid.Column="3" Height="1.5" Fill="{DynamicResource Line}" Margin="14,0" VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="4" Orientation="Horizontal">
+                  <Border x:Name="Step2Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1.5">
+                    <TextBlock x:Name="Step2Glyph" Text="3" FontSize="11.5" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                  </Border>
+                  <TextBlock x:Name="Step2Label" Text="Start" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+              </Grid>
+              <TextBlock x:Name="LaunchTitle" FontSize="16" FontWeight="SemiBold" FontFamily="{StaticResource DisplayFont}" Margin="0,18,0,2"/>
+              <TextBlock x:Name="LaunchDetail" Style="{StaticResource Muted}" FontSize="12.5"/>
+              <ProgressBar x:Name="LaunchProgress" Margin="0,14,0,0" Minimum="0" Maximum="1"/>
+            </StackPanel>
+          </Border>
+
+          <Border x:Name="MissingPanel" Grid.Row="2" Visibility="Collapsed" Margin="36,0,36,20" Background="{DynamicResource WarnTint}"
+                  BorderBrush="{DynamicResource Warn}" BorderThickness="3,0,0,0" Padding="16,12" CornerRadius="6">
             <StackPanel>
               <TextBlock x:Name="MissingTitle" FontWeight="SemiBold"/>
               <TextBlock Style="{StaticResource Muted}" Margin="0,2,0,8"
@@ -203,7 +237,7 @@
             </StackPanel>
           </Border>
 
-          <Grid Grid.Row="2" Margin="36,0,36,0">
+          <Grid Grid.Row="3" Margin="36,0,36,0">
             <StackPanel Orientation="Horizontal">
               <RadioButton x:Name="TabMods" GroupName="Tabs" Style="{StaticResource Tab}" IsChecked="True" Checked="Tab_Checked">
                 <TextBlock><Run Text="Mods"/><Run x:Name="ModCount" Text="" Foreground="{DynamicResource Tertiary}"/></TextBlock>
@@ -214,7 +248,7 @@
           </Grid>
 
           <!-- Mods -->
-          <Grid Grid.Row="3" x:Name="ModsView">
+          <Grid Grid.Row="4" x:Name="ModsView">
             <ListBox x:Name="ModList" Background="Transparent" BorderThickness="0" Padding="20,6,20,16"
                      ItemContainerStyle="{StaticResource Row}" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
               <ListBox.ItemTemplate>
@@ -256,7 +290,7 @@
           </Grid>
 
           <!-- Activity -->
-          <TextBox x:Name="ActivityLog" Grid.Row="3" Visibility="Collapsed" IsReadOnly="True" TextWrapping="Wrap" Margin="36,16,36,24"
+          <TextBox x:Name="ActivityLog" Grid.Row="4" Visibility="Collapsed" IsReadOnly="True" TextWrapping="Wrap" Margin="36,16,36,24"
                    VerticalContentAlignment="Top" Padding="12,10" VerticalScrollBarVisibility="Auto"
                    FontFamily="Cascadia Mono, Consolas" FontSize="12" Background="{DynamicResource Raised}" BorderThickness="0"/>
         </Grid>
@@ -275,7 +309,7 @@
                        IsHitTestVisible="False" Margin="11,0,0,0" VerticalAlignment="Center"/>
             <Button Grid.Column="1" Content="Add server" Style="{StaticResource Primary}" MinHeight="38" Padding="18,0" Margin="8,0,0,0" Click="AddServer_Click"/>
           </Grid>
-          <Border BorderBrush="{DynamicResource Line}" BorderThickness="1" Margin="0,20,0,0">
+          <Border Style="{StaticResource Card}" Margin="0,20,0,0">
             <Grid>
               <ItemsControl x:Name="ServerList">
                 <ItemsControl.ItemTemplate>
@@ -326,7 +360,7 @@
           </Grid>
 
           <TextBlock Text="Protection" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,30,0,8"/>
-          <Border BorderBrush="{DynamicResource Line}" BorderThickness="1">
+          <Border Style="{StaticResource Card}">
             <StackPanel>
               <Grid Margin="18,14">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -397,7 +431,7 @@
             <TextBlock Text="Activity" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}"/>
             <Button x:Name="ClearActivityButton" Content="Clear" Style="{StaticResource Link}" HorizontalAlignment="Right" FontWeight="Normal" Click="ClearActivity_Click"/>
           </Grid>
-          <Border BorderBrush="{DynamicResource Line}" BorderThickness="1">
+          <Border Style="{StaticResource Card}">
             <Grid>
               <ItemsControl x:Name="ActivityList">
                 <ItemsControl.ItemTemplate>
@@ -444,7 +478,7 @@
           </UniformGrid>
 
           <TextBlock Text="What Token Vault can't stop" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,18,0,8"/>
-          <Border BorderBrush="{DynamicResource Line}" BorderThickness="1">
+          <Border Style="{StaticResource Card}">
             <ItemsControl x:Name="LimitsList">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
@@ -471,7 +505,7 @@
           <TextBlock Text="Settings" Style="{StaticResource Display}"/>
 
           <TextBlock Text="Game" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,28,0,8"/>
-          <Border BorderBrush="{DynamicResource Line}" BorderThickness="1">
+          <Border Style="{StaticResource Card}">
             <StackPanel>
               <Grid Margin="18,14">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -500,7 +534,7 @@
           </Border>
 
           <TextBlock Text="Sign-in" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,28,0,8"/>
-          <Border BorderBrush="{DynamicResource Line}" BorderThickness="1">
+          <Border Style="{StaticResource Card}">
             <StackPanel>
               <CheckBox x:Name="DeviceCodeBox" Margin="18,14">
                 <StackPanel>
@@ -521,7 +555,7 @@
           </Border>
 
           <TextBlock Text="Updates and privacy" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,28,0,8"/>
-          <Border BorderBrush="{DynamicResource Line}" BorderThickness="1">
+          <Border Style="{StaticResource Card}">
             <StackPanel>
               <CheckBox x:Name="UpdatesBox" Margin="18,14">
                 <StackPanel>
@@ -540,7 +574,7 @@
           </Border>
 
           <TextBlock Text="Storage" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,28,0,8"/>
-          <Border BorderBrush="{DynamicResource Line}" BorderThickness="1">
+          <Border Style="{StaticResource Card}">
             <Grid Margin="18,14">
               <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
               <StackPanel VerticalAlignment="Center">
@@ -562,25 +596,157 @@
       </ScrollViewer>
     </Grid>
 
-    <!-- ================= Status bar ================= -->
-    <Border Grid.Row="1" Grid.ColumnSpan="2" Background="{DynamicResource Nav}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Height="34">
-      <Grid Margin="16,0">
-        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-          <Ellipse x:Name="StatusDot" Width="7" Height="7" Fill="{DynamicResource Good}" Margin="0,0,10,0"/>
-          <TextBlock x:Name="StatusText" Text="Ready" FontSize="12.5" Foreground="{DynamicResource Secondary}" TextTrimming="CharacterEllipsis"/>
+    <!-- ================= Toast (short confirmations and import progress) ================= -->
+    <Border x:Name="Toast" Grid.Row="1" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,24,24"
+            Background="{DynamicResource Raised}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="10"
+            Padding="14,11" MinWidth="240" MaxWidth="440" Visibility="Collapsed" IsHitTestVisible="False">
+      <Border.Effect><DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.18"/></Border.Effect>
+      <StackPanel>
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Ellipse x:Name="StatusDot" Width="7" Height="7" Fill="{DynamicResource Good}" Margin="0,6,10,0" VerticalAlignment="Top"/>
+          <TextBlock x:Name="StatusText" Grid.Column="1" FontSize="12.5" TextWrapping="Wrap"/>
+        </Grid>
+        <StackPanel x:Name="ProgressArea" Visibility="Collapsed" Margin="17,9,0,0">
+          <ProgressBar x:Name="Progress" Minimum="0" Maximum="1"/>
+          <TextBlock x:Name="ProgressText" FontSize="11.5" Foreground="{DynamicResource Tertiary}" Margin="0,5,0,0"/>
         </StackPanel>
-        <StackPanel x:Name="ProgressArea" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
-          <TextBlock x:Name="ProgressText" FontSize="12" Foreground="{DynamicResource Tertiary}" Margin="0,0,12,0"/>
-          <ProgressBar x:Name="Progress" Width="180" Minimum="0" Maximum="1"/>
+      </StackPanel>
+    </Border>
+
+    <!-- ================= First run ================= -->
+    <Grid x:Name="Onboarding" Grid.RowSpan="2" Grid.ColumnSpan="2" Background="{DynamicResource Bg}" Visibility="Collapsed">
+      <Button x:Name="OnboardingBack" Style="{StaticResource Link}" Margin="28,56,0,0" VerticalAlignment="Top" FontWeight="Normal"
+              Foreground="{DynamicResource Secondary}" Click="OnboardingBack_Click" Visibility="Collapsed">
+        <StackPanel Orientation="Horizontal">
+          <TextBlock Text="&#xE72B;" FontFamily="{StaticResource IconFont}" FontSize="12" VerticalAlignment="Center" Margin="0,1,8,0"/>
+          <TextBlock Text="Back"/>
+        </StackPanel>
+      </Button>
+      <Grid Width="560" VerticalAlignment="Center" Margin="0,40,0,40">
+        <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+
+        <!-- 1. Welcome -->
+        <StackPanel x:Name="WelcomeStep" HorizontalAlignment="Center">
+          <Image Source="Assets/TokenVault.png" Width="96" Height="96" RenderOptions.BitmapScalingMode="HighQuality"/>
+          <TextBlock Text="Welcome to Token Vault" Style="{StaticResource Display}" FontSize="34" HorizontalAlignment="Center" Margin="0,28,0,10"/>
+          <TextBlock Style="{StaticResource Muted}" FontSize="15.5" TextAlignment="Center" LineHeight="23"
+                     Text="Play Minecraft with the mods you want. Token Vault keeps your account out of their reach."/>
+          <Button Content="Get started" Style="{StaticResource Primary}" MinWidth="220" Height="44" FontSize="14.5" Margin="0,40,0,0"
+                  HorizontalAlignment="Center" Click="OnboardingNext_Click"/>
+        </StackPanel>
+
+        <!-- 2. How it works -->
+        <StackPanel x:Name="SafetyStep" Visibility="Collapsed">
+          <TextBlock Text="How your account stays safe" Style="{StaticResource Display}" HorizontalAlignment="Center"/>
+          <TextBlock Style="{StaticResource Muted}" FontSize="14.5" TextAlignment="Center" Margin="0,10,0,30" LineHeight="21"
+                     Text="Mods can do almost anything inside Minecraft. Token Vault makes sure they can't walk off with your account."/>
+          <Grid Margin="0,0,0,22">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Border Width="44" Height="44" CornerRadius="10" Background="{DynamicResource AccentTint}" VerticalAlignment="Top">
+              <TextBlock Text="&#xE72E;" Style="{StaticResource Icon}" FontSize="19" Foreground="{DynamicResource Accent}"/>
+            </Border>
+            <StackPanel Grid.Column="1" Margin="18,0,0,0">
+              <TextBlock Text="Mods run in a sandbox" Style="{StaticResource Subtitle}"/>
+              <TextBlock Style="{StaticResource Muted}" Margin="0,3,0,0" LineHeight="20"
+                         Text="Minecraft and every mod run in a locked-down part of Windows. They can't open your files, your browser or other launchers' saved sign-ins."/>
+            </StackPanel>
+          </Grid>
+          <Grid Margin="0,0,0,22">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Border Width="44" Height="44" CornerRadius="10" Background="{DynamicResource AccentTint}" VerticalAlignment="Top">
+              <TextBlock Text="&#xE8D7;" Style="{StaticResource Icon}" FontSize="19" Foreground="{DynamicResource Accent}"/>
+            </Border>
+            <StackPanel Grid.Column="1" Margin="18,0,0,0">
+              <TextBlock Text="The game never gets your sign-in" Style="{StaticResource Subtitle}"/>
+              <TextBlock Style="{StaticResource Muted}" Margin="0,3,0,0" LineHeight="20"
+                         Text="Minecraft gets a stand-in pass that's worthless if a mod steals it. Your real sign-in stays with Token Vault, encrypted on this PC."/>
+            </StackPanel>
+          </Grid>
+          <Grid Margin="0,0,0,26">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Border Width="44" Height="44" CornerRadius="10" Background="{DynamicResource AccentTint}" VerticalAlignment="Top">
+              <TextBlock Text="&#xE8FB;" Style="{StaticResource Icon}" FontSize="19" Foreground="{DynamicResource Accent}"/>
+            </Border>
+            <StackPanel Grid.Column="1" Margin="18,0,0,0">
+              <TextBlock Text="You approve every server" Style="{StaticResource Subtitle}"/>
+              <TextBlock Style="{StaticResource Muted}" Margin="0,3,0,0" LineHeight="20"
+                         Text="Before anything signs in to a server as you, Token Vault asks in its own window. If you didn't just choose Join, choose Block."/>
+            </StackPanel>
+          </Grid>
+          <Border Background="{DynamicResource Raised}" CornerRadius="10" Padding="16,12">
+            <TextBlock Style="{StaticResource Muted}" FontSize="12.5" LineHeight="19"
+                       Text="One honest limit: while you're on a server, a bad mod controls that connection, like any program you run. It can't take your account with it afterwards. Keep valuable accounts to mods you trust."/>
+          </Border>
+          <Button Content="Continue" Style="{StaticResource Primary}" MinWidth="220" Height="44" FontSize="14.5" Margin="0,30,0,0"
+                  HorizontalAlignment="Center" Click="OnboardingNext_Click"/>
+        </StackPanel>
+
+        <!-- 3. Sandbox approval -->
+        <StackPanel x:Name="SandboxStep" Visibility="Collapsed" HorizontalAlignment="Center">
+          <Border Width="72" Height="72" CornerRadius="18" Background="{DynamicResource AccentTint}" HorizontalAlignment="Center">
+            <TextBlock Text="&#xE7EF;" Style="{StaticResource Icon}" FontSize="32" Foreground="{DynamicResource Accent}"/>
+          </Border>
+          <TextBlock Text="Set up the sandbox" Style="{StaticResource Display}" HorizontalAlignment="Center" Margin="0,24,0,10"/>
+          <TextBlock Style="{StaticResource Muted}" FontSize="14.5" TextAlignment="Center" LineHeight="21"
+                     Text="Windows asks for an administrator's OK once. It lets the sandbox talk to Token Vault on this PC and see folder names at the top of your drive. No account is created and nothing else changes."/>
+          <Button Content="Set up" Style="{StaticResource Primary}" MinWidth="220" Height="44" FontSize="14.5" Margin="0,32,0,0"
+                  HorizontalAlignment="Center" Click="OnboardingSandbox_Click"/>
+          <TextBlock x:Name="SandboxResult" TextAlignment="Center" Margin="0,14,0,0" FontSize="12.5" Visibility="Collapsed"/>
+          <Button Content="Not now" Style="{StaticResource Link}" FontWeight="Normal" Foreground="{DynamicResource Secondary}"
+                  HorizontalAlignment="Center" Margin="0,16,0,0" Click="OnboardingNext_Click"/>
+        </StackPanel>
+
+        <!-- 4. Sign in -->
+        <StackPanel x:Name="SignInStep" Visibility="Collapsed" HorizontalAlignment="Center">
+          <Border Width="72" Height="72" CornerRadius="18" Background="{DynamicResource AccentTint}" HorizontalAlignment="Center">
+            <TextBlock Text="&#xE77B;" Style="{StaticResource Icon}" FontSize="32" Foreground="{DynamicResource Accent}"/>
+          </Border>
+          <TextBlock Text="Sign in with Microsoft" Style="{StaticResource Display}" HorizontalAlignment="Center" Margin="0,24,0,10"/>
+          <TextBlock Style="{StaticResource Muted}" FontSize="14.5" TextAlignment="Center" LineHeight="21"
+                     Text="Your browser opens Microsoft's own sign-in page. Your password goes only to Microsoft. Token Vault never sees it, and Minecraft never gets your sign-in."/>
+          <Button x:Name="OnboardingSignInButton" Content="Sign in with Microsoft" Style="{StaticResource Primary}" MinWidth="240" Height="44" FontSize="14.5"
+                  Margin="0,32,0,0" HorizontalAlignment="Center" Click="OnboardingSignIn_Click"/>
+          <TextBlock x:Name="SignInResult" TextAlignment="Center" Margin="0,14,0,0" FontSize="12.5" TextWrapping="Wrap" Visibility="Collapsed"/>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,16,0,0">
+            <Button Content="Use a code instead" Style="{StaticResource Link}" FontWeight="Normal" Click="OnboardingCode_Click"/>
+            <TextBlock Text="·" Foreground="{DynamicResource Tertiary}" Margin="12,0"/>
+            <Button Content="Skip for now" Style="{StaticResource Link}" FontWeight="Normal" Foreground="{DynamicResource Secondary}" Click="OnboardingNext_Click"/>
+          </StackPanel>
+        </StackPanel>
+
+        <!-- 5. Done -->
+        <StackPanel x:Name="DoneStep" Visibility="Collapsed" HorizontalAlignment="Center">
+          <Border Width="72" Height="72" CornerRadius="36" Background="{DynamicResource Accent}" HorizontalAlignment="Center">
+            <TextBlock Text="&#xE73E;" Style="{StaticResource Icon}" FontSize="32" Foreground="{DynamicResource OnAccent}"/>
+          </Border>
+          <TextBlock Text="You're all set" Style="{StaticResource Display}" HorizontalAlignment="Center" Margin="0,24,0,10"/>
+          <TextBlock x:Name="DoneDetail" Style="{StaticResource Muted}" FontSize="14.5" TextAlignment="Center" LineHeight="21"
+                     Text="Pick an instance in your library and press Play, or drop a modpack onto the window."/>
+          <Border x:Name="StatisticsCard" Style="{StaticResource Card}" Padding="18,14" Margin="0,28,0,0">
+            <CheckBox x:Name="OnboardingStatistics">
+              <StackPanel>
+                <TextBlock Text="Share anonymous usage statistics" FontWeight="SemiBold"/>
+                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" FontSize="12.5"
+                           Text="Which features get used and whether launches work. Never your account, servers, mods or files. You can change this in Settings."/>
+              </StackPanel>
+            </CheckBox>
+          </Border>
+          <Button Content="Start playing" Style="{StaticResource Primary}" MinWidth="220" Height="44" FontSize="14.5" Margin="0,32,0,0"
+                  HorizontalAlignment="Center" Click="OnboardingFinish_Click"/>
+        </StackPanel>
+
+        <StackPanel x:Name="OnboardingDots" Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,44,0,0">
+          <Ellipse Width="7" Height="7" Margin="4,0"/><Ellipse Width="7" Height="7" Margin="4,0"/><Ellipse Width="7" Height="7" Margin="4,0"/>
+          <Ellipse Width="7" Height="7" Margin="4,0"/><Ellipse Width="7" Height="7" Margin="4,0"/>
         </StackPanel>
       </Grid>
-    </Border>
+    </Grid>
 
     <!-- ================= Dialog overlay ================= -->
     <Grid x:Name="Overlay" Grid.RowSpan="2" Grid.ColumnSpan="2" Background="{DynamicResource Scrim}" Visibility="Collapsed">
       <!-- New instance -->
-      <Border x:Name="NewInstanceCard" Width="460" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1"
+      <Border x:Name="NewInstanceCard" Width="460" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="12"
               HorizontalAlignment="Center" VerticalAlignment="Center" Padding="28,24" Visibility="Collapsed">
         <StackPanel>
           <TextBlock Text="New instance" Style="{StaticResource Title}"/>
@@ -605,7 +771,7 @@
           </StackPanel>
         </StackPanel>
       </Border>
-      <Border x:Name="DialogCard" Width="460" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1"
+      <Border x:Name="DialogCard" Width="460" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="12"
               HorizontalAlignment="Center" VerticalAlignment="Center" Padding="28,24">
         <StackPanel>
           <TextBlock x:Name="DialogTitle" Style="{StaticResource Title}"/>
@@ -619,5 +785,19 @@
         </StackPanel>
       </Border>
     </Grid>
+
+    <!-- ================= Title bar (drawn last, so it stays on top) ================= -->
+    <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0" IsHitTestVisible="False">
+      <Image Source="Assets/TokenVault.png" Width="18" Height="18" RenderOptions.BitmapScalingMode="HighQuality"/>
+      <TextBlock Text="Token Vault" FontSize="12.5" FontWeight="SemiBold" Margin="10,0,0,0" VerticalAlignment="Center"/>
+    </StackPanel>
+    <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+      <Button Style="{StaticResource CaptionButton}" Content="&#xE921;" ToolTip="Minimize" WindowChrome.IsHitTestVisibleInChrome="True"
+              AutomationProperties.Name="Minimize" Click="Minimize_Click"/>
+      <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}" Content="&#xE922;" ToolTip="Maximize" WindowChrome.IsHitTestVisibleInChrome="True"
+              AutomationProperties.Name="Maximize" Click="Maximize_Click"/>
+      <Button Style="{StaticResource CloseButton}" Content="&#xE8BB;" ToolTip="Close" WindowChrome.IsHitTestVisibleInChrome="True"
+              AutomationProperties.Name="Close" Click="Close_Click"/>
+    </StackPanel>
   </Grid>
 </Window>
