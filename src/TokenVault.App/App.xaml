@@ -9,7 +9,7 @@
     </ResourceDictionary.MergedDictionaries>
 
     <FontFamily x:Key="UiFont">Segoe UI Variable Text, Segoe UI</FontFamily>
-    <FontFamily x:Key="DisplayFont">Segoe UI Variable Display, Segoe UI</FontFamily>
+    <FontFamily x:Key="DisplayFont">Bahnschrift, Segoe UI Variable Display, Segoe UI</FontFamily>
     <FontFamily x:Key="IconFont">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
 
     <!-- ===== Text (named styles only: an implicit TextBlock style would also restyle text inside buttons) ===== -->
@@ -25,6 +25,19 @@
       <Setter Property="FontFamily" Value="{StaticResource DisplayFont}"/>
       <Setter Property="FontSize" Value="20"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+    <!-- Big instance and section names -->
+    <Style x:Key="Headline" TargetType="TextBlock" BasedOn="{StaticResource Body}">
+      <Setter Property="FontFamily" Value="{StaticResource DisplayFont}"/>
+      <Setter Property="FontSize" Value="34"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+    <!-- Small label above a group of rows -->
+    <Style x:Key="Kicker" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="{StaticResource DisplayFont}"/>
+      <Setter Property="FontSize" Value="15"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Foreground" Value="{DynamicResource Text}"/>
     </Style>
     <Style x:Key="Subtitle" TargetType="TextBlock" BasedOn="{StaticResource Body}">
       <Setter Property="FontSize" Value="14.5"/>
@@ -69,7 +82,7 @@
         <Setter.Value>
           <ControlTemplate TargetType="Button">
             <Border x:Name="Box" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                    BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="6">
+                    BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="4">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"/>
             </Border>
             <ControlTemplate.Triggers>
@@ -85,16 +98,24 @@
     <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
       <Setter Property="Foreground" Value="{DynamicResource OnAccent}"/>
       <Setter Property="Background" Value="{DynamicResource Accent}"/>
-      <Setter Property="BorderBrush" Value="{DynamicResource Accent}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentShade}"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Template">
         <Setter.Value>
+          <!-- A block with a darker bottom edge that sinks when pressed. -->
           <ControlTemplate TargetType="Button">
-            <Border x:Name="Box" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}" CornerRadius="6">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"/>
-            </Border>
+            <Grid Background="Transparent">
+              <Border x:Name="Box" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="0,0,0,3"
+                      Padding="{TemplateBinding Padding}" CornerRadius="4">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True" Margin="0,2,0,0"/>
+              </Border>
+            </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Box" Property="Background" Value="{DynamicResource AccentHover}"/></Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="Box" Property="BorderThickness" Value="0"/>
+                <Setter TargetName="Box" Property="Margin" Value="0,3,0,0"/>
+              </Trigger>
               <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -104,7 +125,7 @@
 
     <Style x:Key="Danger" TargetType="Button" BasedOn="{StaticResource Primary}">
       <Setter Property="Background" Value="{DynamicResource Bad}"/>
-      <Setter Property="BorderBrush" Value="{DynamicResource Bad}"/>
+      <Setter Property="BorderBrush" Value="#8E1F24"/>
       <Setter Property="Foreground" Value="#FFFFFF"/>
     </Style>
 
@@ -142,39 +163,30 @@
       </Setter>
     </Style>
 
-    <!-- ===== Navigation rail items ===== -->
-    <Style x:Key="NavItem" TargetType="RadioButton">
-      <Setter Property="Foreground" Value="{DynamicResource Secondary}"/>
+    <!-- Title bar pill: instance picker, vault status, account -->
+    <Style x:Key="Chip" TargetType="Button">
+      <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+      <Setter Property="Background" Value="Transparent"/>
       <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Height" Value="34"/>
+      <Setter Property="Padding" Value="10,0"/>
       <Setter Property="FocusVisualStyle" Value="{StaticResource Focus}"/>
-      <Setter Property="Height" Value="38"/>
-      <Setter Property="Margin" Value="10,1"/>
+      <Setter Property="WindowChrome.IsHitTestVisibleInChrome" Value="True"/>
       <Setter Property="Template">
         <Setter.Value>
-          <ControlTemplate TargetType="RadioButton">
-            <Border x:Name="Row" Background="Transparent" CornerRadius="6">
-              <StackPanel Orientation="Horizontal" Margin="12,0,0,0">
-                <TextBlock x:Name="Glyph" Text="{TemplateBinding Tag}" Style="{StaticResource Icon}" Width="18"/>
-                <ContentPresenter VerticalAlignment="Center" Margin="12,0,0,0"/>
-              </StackPanel>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Box" Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
+              <ContentPresenter VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Row" Property="Background" Value="{DynamicResource Hover}"/>
-                <Setter Property="Foreground" Value="{DynamicResource Text}"/>
-              </Trigger>
-              <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="Row" Property="Background" Value="{DynamicResource Selected}"/>
-                <Setter TargetName="Glyph" Property="Foreground" Value="{DynamicResource Accent}"/>
-                <Setter Property="Foreground" Value="{DynamicResource Text}"/>
-                <Setter Property="FontWeight" Value="SemiBold"/>
-              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Box" Property="Background" Value="{DynamicResource Hover}"/></Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="Box" Property="Background" Value="{DynamicResource Selected}"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
     </Style>
-
     <!-- Tabs (underline style) -->
     <Style x:Key="Tab" TargetType="RadioButton">
       <Setter Property="Foreground" Value="{DynamicResource Secondary}"/>
@@ -217,7 +229,7 @@
         <Setter.Value>
           <ControlTemplate TargetType="TextBox">
             <Border x:Name="Box" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                    BorderThickness="{TemplateBinding BorderThickness}" SnapsToDevicePixels="True" CornerRadius="6">
+                    BorderThickness="{TemplateBinding BorderThickness}" SnapsToDevicePixels="True" CornerRadius="4">
               <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" Focusable="False"
                             VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
             </Border>
@@ -449,7 +461,7 @@
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ListBoxItem">
-            <Border x:Name="Row" Background="Transparent" CornerRadius="8" Margin="8,1">
+            <Border x:Name="Row" Background="Transparent" CornerRadius="4" Margin="4,1">
               <ContentPresenter Margin="10,8,10,8"/>
             </Border>
             <ControlTemplate.Triggers>
@@ -495,7 +507,7 @@
     <Style x:Key="Tile" TargetType="Border">
       <Setter Property="Width" Value="36"/>
       <Setter Property="Height" Value="36"/>
-      <Setter Property="CornerRadius" Value="8"/>
+      <Setter Property="CornerRadius" Value="4"/>
       <Setter Property="SnapsToDevicePixels" Value="True"/>
     </Style>
 
@@ -504,7 +516,7 @@
       <Setter Property="Background" Value="{DynamicResource Surface}"/>
       <Setter Property="BorderBrush" Value="{DynamicResource Line}"/>
       <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="CornerRadius" Value="10"/>
+      <Setter Property="CornerRadius" Value="6"/>
       <Setter Property="SnapsToDevicePixels" Value="True"/>
     </Style>
 

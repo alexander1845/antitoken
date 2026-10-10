@@ -14,6 +14,7 @@
   <SolidColorBrush x:Key="Tertiary" Color="#8D8D96"/>
   <SolidColorBrush x:Key="Accent" Color="#15924E"/>
   <SolidColorBrush x:Key="AccentHover" Color="#117F43"/>
+  <SolidColorBrush x:Key="AccentShade" Color="#0C6234"/>
   <SolidColorBrush x:Key="AccentTint" Color="#E7F5ED"/>
   <SolidColorBrush x:Key="OnAccent" Color="#FFFFFF"/>
   <SolidColorBrush x:Key="Good" Color="#15924E"/>

@@ -7,7 +7,7 @@
 <p align="center">A Minecraft launcher for Windows that keeps your account away from the mods you run.</p>
 
 <p align="center">
-  <img src="docs/screenshots/06-library.png" width="820" alt="Token Vault's library, with an instance ready to play">
+  <img src="docs/screenshots/02-mods.png" width="820" alt="Token Vault with an instance selected, its mods listed and the Play button">
 </p>
 
 Most stolen Minecraft accounts go the same way. Someone installs a mod that looks fine, the mod reads the sign-in
@@ -27,21 +27,22 @@ Forge and NeoForge work but are less tested.
    write to, like your Downloads or Documents folder. Program Files won't work, because Token Vault updates itself.
 2. Open `TokenVault.exe`. The first time, Windows SmartScreen may say it doesn't recognise the app. Choose
    **More info**, then **Run anyway**.
-3. Token Vault walks you through the rest: what it protects, a one-time Windows approval for the sandbox, and
-   signing in with Microsoft in your browser.
+3. One page of setup: a one-time Windows approval for the sandbox, signing in with Microsoft in your browser, and
+   whether to share anonymous statistics. Skip anything; it's all under the gear later.
 
-After that, pick an instance in your library and press Play. Minecraft, Java and the mod loader download from
-Mojang and the loader's own servers the first time, and every file is checked against the hash its publisher lists.
+After that, pick an instance on the left and press Play. Minecraft, Java and the mod loader download from Mojang
+and the loader's own servers the first time, and every file is checked against the hash its publisher lists.
 
-To add mods, drop `.jar` files or a whole modpack onto the window. Modrinth (`.mrpack`), CurseForge, Prism and
-MultiMC exports and ordinary archives all work. Each pack becomes its own instance with the right Minecraft version
-and loader.
+To add mods, open **Find mods**: it searches Modrinth for mods that fit that instance's Minecraft version and
+loader, and installs what they need (Fabric API, for example) along with them. You can also drop `.jar` files or a
+whole modpack onto the window. Modrinth (`.mrpack`), CurseForge, Prism and MultiMC exports and ordinary archives
+all work, and each pack becomes its own instance with the right version and loader.
 
-Add your servers on the **Servers** page. They show up in Minecraft's multiplayer list.
+Add your servers on the **Servers** tab. They show up in Minecraft's multiplayer list.
 
 <p align="center">
-  <img src="docs/screenshots/02-how-it-works.png" width="410" alt="First-run screen explaining how the account stays safe">
-  <img src="docs/screenshots/10-launching.png" width="410" alt="Launch progress while game files download">
+  <img src="docs/screenshots/03-find-mods.png" width="410" alt="Find mods: popular Modrinth mods for the instance's version and loader">
+  <img src="docs/screenshots/08-launching.png" width="410" alt="Launch progress while game files download">
 </p>
 
 ## How it protects you
@@ -74,7 +75,7 @@ Be clear about these before trusting it with an account you care about.
   time can stick. If something looks wrong, press **Disconnect** at the top of Token Vault. What a mod can't do is
   sign in as you later.
 - **Signed chat.** On Minecraft 1.19 and newer, the game needs a chat-signing key, and a mod can copy it and sign
-  chat as you for about two days. Turn signed chat off on the Security page if your servers don't require it.
+  chat as you for about two days. Turn signed chat off in Protection (bottom left) if your servers don't require it.
 - **Servers you add** are trusted to be what they say. A malicious one can pass your sign-in on to a different server.
 - **Malware already on your PC** that runs as you (outside the sandbox) can read whatever you can.
 - **Other launchers** don't protect you. Play these mods in Token Vault.
@@ -86,11 +87,12 @@ Be clear about these before trusting it with an account you care about.
 
 Token Vault checks this repository's releases when it starts and every few hours. A new version downloads in the
 background and is installed only if it carries Token Vault's release signature. It runs the next time you open the
-app. You can turn this off in Settings.
+app. You can turn this off under the gear.
 
-Usage statistics are off unless you say yes during setup or in Settings. If you do, Token Vault sends anonymous
+Usage statistics are off unless you say yes during setup or under the gear. If you do, Token Vault sends anonymous
 events to PostHog: app and Windows version, which Minecraft version and loader you launch, and whether launches and
-joins work. Never your account, servers, mods or files.
+joins work. Never your account, servers, mods or files. Searching Modrinth sends what you type, plus the instance's
+Minecraft version and loader, to Modrinth.
 
 Your settings and saved sign-in live in `%LOCALAPPDATA%\TokenVault\Data`. Games, instances and mods live in
 `C:\TokenVault`. To uninstall, delete both folders and `TokenVault.exe`. To also remove the sandbox's network
@@ -108,10 +110,10 @@ dotnet run --project tests/TokenVault.Tests -c Release
 
 | Project | What's in it |
 |---|---|
-| `TokenVault.App` | The window: library, play, servers, security, settings, first-run setup |
+| `TokenVault.App` | The window: instances, play, mods, servers, protection and settings, first-run setup |
 | `TokenVault.Vault` | Microsoft sign-in, encrypted storage, the local API, the server login broker, updates |
 | `TokenVault.Launcher` | Game installer, sandbox, folder permissions |
-| `TokenVault.Packs` | Modpack and archive import |
+| `TokenVault.Packs` | Modpack and archive import, Modrinth search and install |
 | `TokenVault.Core` | Settings, Minecraft protocol and crypto, envelope encryption |
 
 Screenshots in `docs/screenshots` are taken by CI, which runs the real app on Windows and clicks through it.
@@ -131,7 +133,7 @@ and `SIGNING_CERT_PASSWORD` secrets.
 
 Microsoft sign-in uses the public application ID that Prism Launcher publishes, so Microsoft's consent page says
 "Prism Launcher". If you distribute your own build, register your own app (personal accounts, public client,
-redirect `http://127.0.0.1:25597/`, Minecraft API approval) and set it in Settings.
+redirect `http://127.0.0.1:25597/`, Minecraft API approval) and set it under the gear.
 
 ## More
 

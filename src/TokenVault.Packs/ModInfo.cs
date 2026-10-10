@@ -6,7 +6,7 @@ namespace TokenVault.Packs;
 
 // Display info for an installed mod, read from its fabric.mod.json. Mod files are sandbox-writable, so this is
 // treated as untrusted input: bounded reads, no code, no images, plain strings only.
-public sealed record ModInfo(string Name, string? Version, string File, long Size)
+public sealed record ModInfo(string Name, string? Version, string File, long Size, string? Id = null)
 {
     public static ModInfo Read(string path)
     {
@@ -22,7 +22,7 @@ public sealed record ModInfo(string Name, string? Version, string File, long Siz
                 using var json = JsonDocument.Parse(stream, new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip });
                 var root = json.RootElement;
                 string? Field(string key) => root.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? Clean(v.GetString()) : null;
-                return new(Field("name") ?? Field("id") ?? name, Field("version"), info.Name, info.Length);
+                return new(Field("name") ?? Field("id") ?? name, Field("version"), info.Name, info.Length, Field("id"));
             }
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or UnauthorizedAccessException) { }

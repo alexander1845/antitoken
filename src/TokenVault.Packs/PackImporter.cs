@@ -80,6 +80,18 @@ public sealed class PackImporter(HttpClient http)
         }
     }
 
+    // Downloads one Modrinth file (see ModrinthClient.ResolveAsync) into an existing instance's mods folder and records
+    // where it came from. Only call while its game is closed.
+    public async Task InstallModAsync(Instance instance, ModrinthFile file, CancellationToken ct)
+    {
+        if (!ModrinthClient.IsCdn(file.Url) || !IsModFile(file.FileName))
+            throw new UserVisibleException("Token Vault only installs .jar files from Modrinth's own servers.");
+        Directory.CreateDirectory(instance.ModsDirectory);
+        string target = SafeFiles.Under(instance.Directory, "mods/" + SafeFiles.FileName(file.FileName));
+        await DownloadAsync(file.Url, target, file.Size, file.Sha512, null, ct);
+        instance.ModrinthFiles[Path.GetFileName(target)] = file.ProjectId;
+    }
+
     public static bool IsModFile(string path) => path.EndsWith(".jar", StringComparison.OrdinalIgnoreCase);
 
     // ---------- Detection
@@ -318,7 +330,7 @@ public sealed class PackImporter(HttpClient http)
                     output.Position = 0;
                     byte[] hash = sha512 is not null ? await SHA512.HashDataAsync(output, ct) : await SHA1.HashDataAsync(output, ct);
                     if (!Convert.ToHexString(hash).Equals(sha512 ?? sha1, StringComparison.OrdinalIgnoreCase))
-                        throw new UserVisibleException("A downloaded mod didn't match the checksum in the pack. The import was stopped.");
+                        throw new UserVisibleException("A downloaded mod didn't match its published checksum, so it wasn't installed.");
                 }
             }
             File.Move(part, target, overwrite: true);

@@ -1,604 +1,418 @@
 <Window x:Class="TokenVault.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Token Vault" Width="1180" Height="760" MinWidth="940" MinHeight="600" Icon="Assets/TokenVault.ico"
+        Title="Token Vault" Width="1120" Height="720" MinWidth="860" MinHeight="560" Icon="Assets/TokenVault.ico"
         WindowStartupLocation="CenterScreen" AllowDrop="True" UseLayoutRounding="True"
         Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="13.5"
         TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType">
   <!-- Token Vault draws its own title bar; Windows still handles dragging, snapping, resizing and the system menu. -->
   <WindowChrome.WindowChrome>
-    <WindowChrome CaptionHeight="40" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False"/>
+    <WindowChrome CaptionHeight="52" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False"/>
   </WindowChrome.WindowChrome>
+  <!-- Left: a shelf of instances, the vault's status and the account. Right: the selected instance. -->
   <Grid x:Name="Root">
     <Grid.RowDefinitions>
-      <RowDefinition Height="40"/>
+      <RowDefinition Height="52"/>
+      <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
     </Grid.RowDefinitions>
     <Grid.ColumnDefinitions>
-      <ColumnDefinition Width="224"/>
+      <ColumnDefinition Width="252"/>
       <ColumnDefinition Width="*"/>
     </Grid.ColumnDefinitions>
 
-    <!-- ================= Navigation rail (reaches up into the title bar) ================= -->
-    <Border Grid.RowSpan="2" Background="{DynamicResource Nav}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0"/>
-    <Border Grid.Row="1" Grid.Column="0">
-      <DockPanel Margin="0,10,0,0">
-
-        <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="16,14,16,16">
-          <Grid>
-            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <Border x:Name="AccountTile" Style="{StaticResource Tile}" Width="34" Height="34" Background="{DynamicResource Selected}" VerticalAlignment="Top">
-              <TextBlock x:Name="AccountInitial" Text="&#xE77B;" Style="{StaticResource Icon}" FontSize="14" Foreground="{DynamicResource Secondary}"/>
-            </Border>
-            <StackPanel Grid.Column="1" Margin="10,0,0,0">
-              <TextBlock x:Name="AccountName" Text="Not signed in" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-              <TextBlock x:Name="AccountDetail" Text="Microsoft account" Style="{StaticResource Caption}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
-              <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                <Button x:Name="SignInButton" Content="Sign in" Style="{StaticResource Link}" FontSize="12.5" Click="SignIn_Click"/>
-                <Button x:Name="SignOutButton" Content="Sign out" Style="{StaticResource Link}" FontSize="12.5" Click="SignOut_Click"/>
-              </StackPanel>
+    <!-- ================= Shelf ================= -->
+    <Border Grid.RowSpan="3" Background="{DynamicResource Nav}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0"/>
+    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="18,0,0,0" IsHitTestVisible="False">
+      <Image Source="Assets/TokenVault.png" Width="20" Height="20" RenderOptions.BitmapScalingMode="HighQuality"/>
+      <TextBlock Text="Token Vault" FontFamily="{StaticResource DisplayFont}" FontSize="14.5" FontWeight="SemiBold" Margin="9,0,0,0" VerticalAlignment="Center"/>
+    </StackPanel>
+    <DockPanel Grid.Row="1" Grid.RowSpan="2">
+      <!-- Account -->
+      <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="18,12,14,14">
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border x:Name="AccountTile" Width="30" Height="30" CornerRadius="4" Background="{DynamicResource Selected}" VerticalAlignment="Top">
+            <TextBlock x:Name="AccountInitial" Text="&#xE77B;" Style="{StaticResource Icon}" FontSize="13" Foreground="{DynamicResource Secondary}"/>
+          </Border>
+          <StackPanel Grid.Column="1" Margin="10,0,0,0">
+            <TextBlock x:Name="AccountName" Text="Not signed in" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+            <TextBlock x:Name="AccountDetail" Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+            <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+              <Button x:Name="SignInButton" Content="Sign in" Style="{StaticResource Link}" FontSize="12.5" Click="SignIn_Click"/>
+              <Button x:Name="SignOutButton" Content="Sign out" Style="{StaticResource Link}" FontSize="12.5" FontWeight="Normal" Foreground="{DynamicResource Secondary}" Click="SignOut_Click"/>
             </StackPanel>
-          </Grid>
-        </Border>
+          </StackPanel>
+        </Grid>
+      </Border>
 
-        <StackPanel>
-          <RadioButton x:Name="NavLibrary" GroupName="Nav" Style="{StaticResource NavItem}" Tag="&#xE8F1;" Content="Library" IsChecked="True" Checked="Nav_Checked"/>
-          <RadioButton x:Name="NavServers" GroupName="Nav" Style="{StaticResource NavItem}" Tag="&#xE774;" Content="Servers" Checked="Nav_Checked"/>
-          <RadioButton x:Name="NavSecurity" GroupName="Nav" Style="{StaticResource NavItem}" Tag="&#xEA18;" Checked="Nav_Checked" AutomationProperties.Name="Security">
-            <StackPanel Orientation="Horizontal">
-              <TextBlock Text="Security"/>
-              <Border x:Name="SecurityBadge" Width="7" Height="7" Background="{DynamicResource Warn}" Margin="8,1,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+      <!-- Vault status: one plain sentence; opens protection and settings -->
+      <Button x:Name="VaultChip" DockPanel.Dock="Bottom" Style="{StaticResource Chip}" Height="Auto" Margin="8,0,8,8" Padding="10,10"
+              HorizontalContentAlignment="Stretch" Click="Drawer_Open" AutomationProperties.Name="Vault status" ToolTip="Protection and settings">
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <TextBlock x:Name="VaultIcon" Text="&#xE72E;" Style="{StaticResource Icon}" FontSize="15" Foreground="{DynamicResource Good}" VerticalAlignment="Top" Margin="0,1,10,0"/>
+          <StackPanel Grid.Column="1">
+            <TextBlock x:Name="VaultText" Text="Your account is in the vault" FontWeight="SemiBold" TextWrapping="Wrap"/>
+            <TextBlock x:Name="VaultHint" Text="Protection and settings" Style="{StaticResource Caption}"/>
+          </StackPanel>
+        </Grid>
+      </Button>
+
+      <StackPanel DockPanel.Dock="Bottom" Margin="8,4,8,14">
+        <Button x:Name="NewInstanceButton" Style="{StaticResource Ghost}" HorizontalContentAlignment="Left" Padding="10,0" Click="NewInstance_Click" AutomationProperties.Name="New instance">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="&#xE710;" FontFamily="{StaticResource IconFont}" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <TextBlock Text="New instance"/>
+          </StackPanel>
+        </Button>
+        <Button x:Name="ImportButton" Style="{StaticResource Ghost}" HorizontalContentAlignment="Left" Padding="10,0" Click="Import_Click" AutomationProperties.Name="Import a modpack">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="&#xE8B5;" FontFamily="{StaticResource IconFont}" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <TextBlock Text="Import a modpack"/>
+          </StackPanel>
+        </Button>
+      </StackPanel>
+
+      <TextBlock DockPanel.Dock="Top" Text="Instances" Style="{StaticResource Caption}" Margin="22,14,0,6"/>
+      <ListBox x:Name="Library" SelectionChanged="Library_SelectionChanged" Padding="4,0">
+        <ListBox.ItemContainerStyle>
+          <Style TargetType="ListBoxItem">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                  <Border x:Name="Row" Background="Transparent" CornerRadius="4" Margin="4,1">
+                    <Grid>
+                      <Rectangle x:Name="Bar" Width="3" HorizontalAlignment="Left" Fill="{DynamicResource Accent}" Margin="0,8" RadiusX="1.5" RadiusY="1.5" Visibility="Hidden"/>
+                      <ContentPresenter Margin="14,9,10,9"/>
+                    </Grid>
+                  </Border>
+                  <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Row" Property="Background" Value="{DynamicResource Hover}"/></Trigger>
+                    <Trigger Property="IsSelected" Value="True">
+                      <Setter TargetName="Row" Property="Background" Value="{DynamicResource Selected}"/>
+                      <Setter TargetName="Bar" Property="Visibility" Value="Visible"/>
+                    </Trigger>
+                  </ControlTemplate.Triggers>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>
+        </ListBox.ItemContainerStyle>
+        <ListBox.ItemTemplate>
+          <DataTemplate>
+            <StackPanel>
+              <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+              <TextBlock Text="{Binding Summary}" Style="{StaticResource Caption}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
             </StackPanel>
-          </RadioButton>
-          <RadioButton x:Name="NavSettings" GroupName="Nav" Style="{StaticResource NavItem}" Tag="&#xE713;" Content="Settings" Checked="Nav_Checked"/>
-        </StackPanel>
-      </DockPanel>
-    </Border>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </DockPanel>
 
-    <!-- ================= Content ================= -->
-    <Grid Grid.Row="1" Grid.Column="1">
+    <!-- ================= Title bar (right part) ================= -->
+    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+      <Button x:Name="SettingsButton" Content="&#xE713;" Style="{StaticResource IconButton}" Margin="0,9,6,0" VerticalAlignment="Top" WindowChrome.IsHitTestVisibleInChrome="True"
+              ToolTip="Protection and settings" AutomationProperties.Name="Settings" Click="Drawer_Open"/>
+      <Button Style="{StaticResource CaptionButton}" Content="&#xE921;" ToolTip="Minimize" WindowChrome.IsHitTestVisibleInChrome="True"
+              AutomationProperties.Name="Minimize" Click="Minimize_Click"/>
+      <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}" Content="&#xE922;" ToolTip="Maximize" WindowChrome.IsHitTestVisibleInChrome="True"
+              AutomationProperties.Name="Maximize" Click="Maximize_Click"/>
+      <Button Style="{StaticResource CloseButton}" Content="&#xE8BB;" ToolTip="Close" WindowChrome.IsHitTestVisibleInChrome="True"
+              AutomationProperties.Name="Close" Click="Close_Click"/>
+    </StackPanel>
+
+    <!-- ================= Banners: error, live connection, update ================= -->
+    <StackPanel Grid.Row="1" Grid.Column="1">
+      <Border x:Name="Banner" Visibility="Collapsed" Background="{DynamicResource BadTint}" BorderBrush="{DynamicResource Bad}" BorderThickness="0,0,0,1">
+        <Grid Margin="40,10,12,10">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBlock x:Name="BannerIcon" Text="&#xE783;" Style="{StaticResource Icon}" Foreground="{DynamicResource Bad}" VerticalAlignment="Top" Margin="0,2,12,0"/>
+          <TextBlock x:Name="BannerText" Grid.Column="1" Style="{StaticResource Body}" VerticalAlignment="Center"/>
+          <Button Grid.Column="2" Content="&#xE711;" Style="{StaticResource IconButton}" Width="28" Height="28" FontSize="11" ToolTip="Dismiss" Click="Banner_Close"/>
+        </Grid>
+      </Border>
+      <Border x:Name="ConnectionBar" Visibility="Collapsed" Background="{DynamicResource AccentTint}" BorderBrush="{DynamicResource Accent}" BorderThickness="0,0,0,1">
+        <Grid Margin="40,8,12,8">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBlock Text="&#xE701;" Style="{StaticResource Icon}" Foreground="{DynamicResource Accent}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+          <TextBlock x:Name="ConnectionText" Grid.Column="1" Style="{StaticResource Body}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,12,0"/>
+          <Button Grid.Column="2" Content="Disconnect" VerticalAlignment="Center" Click="Disconnect_Click"/>
+        </Grid>
+      </Border>
+      <Border x:Name="UpdateBar" Visibility="Collapsed" Background="{DynamicResource AccentTint}" BorderBrush="{DynamicResource Accent}" BorderThickness="0,0,0,1">
+        <Grid Margin="40,8,12,8">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBlock Text="&#xE896;" Style="{StaticResource Icon}" Foreground="{DynamicResource Accent}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+          <TextBlock x:Name="UpdateText" Grid.Column="1" Style="{StaticResource Body}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,12,0"/>
+          <Button x:Name="UpdateButton" Grid.Column="2" Style="{StaticResource Primary}" VerticalAlignment="Center" Padding="16,0" Click="Update_Click"/>
+          <Button Grid.Column="3" Content="&#xE711;" Style="{StaticResource IconButton}" Width="28" Height="28" FontSize="11" Margin="8,0,0,0" ToolTip="Later" Click="UpdateClose_Click"/>
+        </Grid>
+      </Border>
+    </StackPanel>
+
+    <!-- ================= The selected instance ================= -->
+    <Grid Grid.Row="2" Grid.Column="1" Margin="40,0,40,0">
       <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>
       </Grid.RowDefinitions>
 
-      <!-- Error / notice banner, live connection, update -->
-      <StackPanel>
-        <Border x:Name="Banner" Visibility="Collapsed" Background="{DynamicResource BadTint}" BorderBrush="{DynamicResource Bad}" BorderThickness="3,0,0,0">
-          <Grid Margin="16,10,8,10">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <TextBlock x:Name="BannerIcon" Text="&#xE783;" Style="{StaticResource Icon}" Foreground="{DynamicResource Bad}" VerticalAlignment="Top" Margin="0,2,12,0"/>
-            <TextBlock x:Name="BannerText" Grid.Column="1" Style="{StaticResource Body}" VerticalAlignment="Center"/>
-            <Button Grid.Column="2" Content="&#xE711;" Style="{StaticResource IconButton}" Width="28" Height="28" FontSize="11" ToolTip="Dismiss" Click="Banner_Close"/>
-          </Grid>
-        </Border>
-
-        <Border x:Name="ConnectionBar" Visibility="Collapsed" Background="{DynamicResource AccentTint}" BorderBrush="{DynamicResource Accent}" BorderThickness="3,0,0,0">
-          <Grid Margin="16,8,12,8">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <TextBlock Text="&#xE701;" Style="{StaticResource Icon}" Foreground="{DynamicResource Accent}" VerticalAlignment="Center" Margin="0,0,12,0"/>
-            <TextBlock x:Name="ConnectionText" Grid.Column="1" Style="{StaticResource Body}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,12,0"/>
-            <Button Grid.Column="2" Content="Disconnect" VerticalAlignment="Center" Click="Disconnect_Click"/>
-          </Grid>
-        </Border>
-
-        <Border x:Name="UpdateBar" Visibility="Collapsed" Background="{DynamicResource AccentTint}" BorderBrush="{DynamicResource Accent}" BorderThickness="3,0,0,0">
-          <Grid Margin="16,8,8,8">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <TextBlock Text="&#xE896;" Style="{StaticResource Icon}" Foreground="{DynamicResource Accent}" VerticalAlignment="Center" Margin="0,0,12,0"/>
-            <TextBlock x:Name="UpdateText" Grid.Column="1" Style="{StaticResource Body}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,12,0"/>
-            <Button x:Name="UpdateButton" Grid.Column="2" Style="{StaticResource Primary}" VerticalAlignment="Center" Padding="16,0" Click="Update_Click"/>
-            <Button Grid.Column="3" Content="&#xE711;" Style="{StaticResource IconButton}" Width="28" Height="28" FontSize="11" Margin="8,0,0,0" ToolTip="Later" Click="UpdateClose_Click"/>
-          </Grid>
-        </Border>
-      </StackPanel>
-
-      <!-- ===== Library ===== -->
-      <Grid x:Name="LibraryPage" Grid.Row="1">
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="268"/>
-          <ColumnDefinition Width="*"/>
-        </Grid.ColumnDefinitions>
-
-        <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0">
-          <DockPanel>
-            <Grid DockPanel.Dock="Top" Margin="20,22,12,12">
-              <TextBlock Text="Library" Style="{StaticResource Title}" VerticalAlignment="Center"/>
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button x:Name="NewInstanceButton" Content="&#xE710;" Style="{StaticResource IconButton}" ToolTip="New instance (any Minecraft version and loader)" Click="NewInstance_Click"/>
-                <Button x:Name="ImportButton" Content="&#xE8B5;" Style="{StaticResource IconButton}" ToolTip="Import a modpack or mods" Click="Import_Click"/>
-              </StackPanel>
-            </Grid>
-            <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="20,12">
-              <StackPanel Orientation="Horizontal">
-                <TextBlock Text="&#xE8B5;" Style="{StaticResource Icon}" FontSize="13" Foreground="{DynamicResource Tertiary}" VerticalAlignment="Top" Margin="0,1,10,0"/>
-                <TextBlock Style="{StaticResource Caption}" Width="200" Text="Drop a modpack or .jar anywhere to import it."/>
-              </StackPanel>
-            </Border>
-            <ListBox x:Name="Library" Background="Transparent" BorderThickness="0" Padding="0,0,0,8"
-                     ItemContainerStyle="{StaticResource Row}" SelectionChanged="Library_SelectionChanged"
-                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-              <ListBox.ItemTemplate>
-                <DataTemplate>
-                  <Grid>
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <Border Style="{StaticResource Tile}" Background="{Binding Tile}">
-                      <TextBlock Text="{Binding Initial}" Foreground="#FFFFFF" FontWeight="SemiBold" FontSize="15" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    </Border>
-                    <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
-                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                      <TextBlock Text="{Binding Summary}" Style="{StaticResource Caption}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
-                    </StackPanel>
-                  </Grid>
-                </DataTemplate>
-              </ListBox.ItemTemplate>
-            </ListBox>
-          </DockPanel>
-        </Border>
-
-        <!-- Instance detail -->
-        <Grid Grid.Column="1">
-          <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-          </Grid.RowDefinitions>
-
-          <Grid Margin="36,28,36,24">
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="Auto"/>
-              <ColumnDefinition Width="*"/>
-              <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            <Border x:Name="InstanceTile" Style="{StaticResource Tile}" Width="72" Height="72" Background="#3B6E52" VerticalAlignment="Top">
-              <TextBlock x:Name="InstanceInitial" Text="F" Foreground="#FFFFFF" FontSize="30" FontWeight="SemiBold" FontFamily="{StaticResource DisplayFont}"
-                         HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <StackPanel Grid.Column="1" Margin="20,0,20,0" VerticalAlignment="Center">
-              <TextBlock x:Name="InstanceTitle" Style="{StaticResource Display}" Text="Minecraft" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
-              <ItemsControl x:Name="InstanceFacts" Margin="0,8,0,0">
-                <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate>
-                    <Border BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" Padding="8,2" Margin="0,0,6,4">
-                      <TextBlock Text="{Binding}" FontSize="12" Foreground="{DynamicResource Secondary}"/>
-                    </Border>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-            </StackPanel>
-            <StackPanel Grid.Column="2" VerticalAlignment="Center">
-              <Button x:Name="PlayButton" Style="{StaticResource Primary}" Width="168" Height="46" FontSize="15" Click="Play_Click" IsDefault="True" AutomationProperties.Name="Play">
-                <StackPanel Orientation="Horizontal">
-                  <TextBlock x:Name="PlayIcon" Text="&#xE768;" FontFamily="{StaticResource IconFont}" FontSize="14" VerticalAlignment="Center" Margin="0,1,10,0"/>
-                  <TextBlock x:Name="PlayLabel" Text="Play" VerticalAlignment="Center"/>
-                </StackPanel>
-              </Button>
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
-                <Button x:Name="AddModsButton" Content="&#xE710;" Style="{StaticResource IconButton}" ToolTip="Add mods (.jar)" Click="AddMods_Click"/>
-                <Button x:Name="OpenFolderButton" Content="&#xE838;" Style="{StaticResource IconButton}" ToolTip="Open instance folder" Click="OpenFolder_Click"/>
-                <Button x:Name="RemoveButton" Content="&#xE74D;" Style="{StaticResource IconButton}" ToolTip="Remove instance" Click="Remove_Click"/>
-              </StackPanel>
-            </StackPanel>
-          </Grid>
-
-          <!-- Files a CurseForge pack could not download automatically -->
-          <!-- Launch progress: game files, sign-in, start, then "playing" -->
-          <Border x:Name="LaunchPanel" Grid.Row="1" Style="{StaticResource Card}" Margin="36,0,36,20" Padding="22,18" Visibility="Collapsed">
-            <StackPanel>
-              <Grid>
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <StackPanel Orientation="Horizontal">
-                  <Border x:Name="Step0Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1.5">
-                    <TextBlock x:Name="Step0Glyph" Text="1" FontSize="11.5" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                  </Border>
-                  <TextBlock x:Name="Step0Label" Text="Game files" Margin="10,0,0,0" VerticalAlignment="Center"/>
-                </StackPanel>
-                <Rectangle Grid.Column="1" Height="1.5" Fill="{DynamicResource Line}" Margin="14,0" VerticalAlignment="Center"/>
-                <StackPanel Grid.Column="2" Orientation="Horizontal">
-                  <Border x:Name="Step1Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1.5">
-                    <TextBlock x:Name="Step1Glyph" Text="2" FontSize="11.5" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                  </Border>
-                  <TextBlock x:Name="Step1Label" Text="Sign-in" Margin="10,0,0,0" VerticalAlignment="Center"/>
-                </StackPanel>
-                <Rectangle Grid.Column="3" Height="1.5" Fill="{DynamicResource Line}" Margin="14,0" VerticalAlignment="Center"/>
-                <StackPanel Grid.Column="4" Orientation="Horizontal">
-                  <Border x:Name="Step2Dot" Width="24" Height="24" CornerRadius="12" BorderThickness="1.5">
-                    <TextBlock x:Name="Step2Glyph" Text="3" FontSize="11.5" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                  </Border>
-                  <TextBlock x:Name="Step2Label" Text="Start" Margin="10,0,0,0" VerticalAlignment="Center"/>
-                </StackPanel>
-              </Grid>
-              <TextBlock x:Name="LaunchTitle" FontSize="16" FontWeight="SemiBold" FontFamily="{StaticResource DisplayFont}" Margin="0,18,0,2"/>
-              <TextBlock x:Name="LaunchDetail" Style="{StaticResource Muted}" FontSize="12.5"/>
-              <ProgressBar x:Name="LaunchProgress" Margin="0,14,0,0" Minimum="0" Maximum="1"/>
-            </StackPanel>
-          </Border>
-
-          <Border x:Name="MissingPanel" Grid.Row="2" Visibility="Collapsed" Margin="36,0,36,20" Background="{DynamicResource WarnTint}"
-                  BorderBrush="{DynamicResource Warn}" BorderThickness="3,0,0,0" Padding="16,12" CornerRadius="6">
-            <StackPanel>
-              <TextBlock x:Name="MissingTitle" FontWeight="SemiBold"/>
-              <TextBlock Style="{StaticResource Muted}" Margin="0,2,0,8"
-                         Text="The authors of these files don't allow other apps to download them. Open each page, download the file, then drop it on this window."/>
-              <ItemsControl x:Name="MissingList">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate>
-                    <Button Content="{Binding Name}" Tag="{Binding Page}" Style="{StaticResource Link}" Margin="0,2" Click="MissingLink_Click"/>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-              <Button Content="Done, hide this" Style="{StaticResource Link}" Foreground="{DynamicResource Secondary}" Margin="0,10,0,0" Click="MissingDone_Click"/>
-            </StackPanel>
-          </Border>
-
-          <Grid Grid.Row="3" Margin="36,0,36,0">
+      <Grid Margin="0,8,0,22">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <StackPanel VerticalAlignment="Center" Margin="0,0,24,0">
+          <TextBlock x:Name="InstanceTitle" Style="{StaticResource Headline}" Text="Minecraft" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
+          <TextBlock x:Name="InstanceFacts" Foreground="{DynamicResource Secondary}" Margin="1,6,0,0" TextTrimming="CharacterEllipsis"/>
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="OpenFolderButton" Content="&#xE838;" Style="{StaticResource IconButton}" ToolTip="Open the instance folder" AutomationProperties.Name="Open folder" Click="OpenFolder_Click"/>
+          <Button x:Name="RemoveButton" Content="&#xE74D;" Style="{StaticResource IconButton}" ToolTip="Delete this instance" AutomationProperties.Name="Delete instance" Click="Remove_Click" Margin="2,0,16,0"/>
+          <Button x:Name="PlayButton" Style="{StaticResource Primary}" Width="176" Height="52" FontSize="16" Click="Play_Click" IsDefault="True" AutomationProperties.Name="Play">
             <StackPanel Orientation="Horizontal">
-              <RadioButton x:Name="TabMods" GroupName="Tabs" Style="{StaticResource Tab}" IsChecked="True" Checked="Tab_Checked">
-                <TextBlock><Run Text="Mods"/><Run x:Name="ModCount" Text="" Foreground="{DynamicResource Tertiary}"/></TextBlock>
-              </RadioButton>
-              <RadioButton x:Name="TabActivity" GroupName="Tabs" Style="{StaticResource Tab}" Content="Activity" Checked="Tab_Checked"/>
+              <TextBlock x:Name="PlayIcon" Text="&#xE768;" FontFamily="{StaticResource IconFont}" FontSize="14" VerticalAlignment="Center" Margin="0,1,10,0"/>
+              <TextBlock x:Name="PlayLabel" Text="Play" FontFamily="{StaticResource DisplayFont}" VerticalAlignment="Center"/>
             </StackPanel>
-            <Rectangle Style="{StaticResource Rule}" VerticalAlignment="Bottom"/>
-          </Grid>
-
-          <!-- Mods -->
-          <Grid Grid.Row="4" x:Name="ModsView">
-            <ListBox x:Name="ModList" Background="Transparent" BorderThickness="0" Padding="20,6,20,16"
-                     ItemContainerStyle="{StaticResource Row}" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-              <ListBox.ItemTemplate>
-                <DataTemplate>
-                  <Grid>
-                    <Grid.ColumnDefinitions>
-                      <ColumnDefinition Width="Auto"/>
-                      <ColumnDefinition Width="*"/>
-                      <ColumnDefinition Width="Auto"/>
-                      <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <Border Style="{StaticResource Tile}" Width="32" Height="32" Background="{Binding Tile}">
-                      <TextBlock Text="{Binding Initial}" Foreground="#FFFFFF" FontWeight="SemiBold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    </Border>
-                    <StackPanel Grid.Column="1" Margin="12,0,12,0" VerticalAlignment="Center">
-                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
-                      <TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
-                    </StackPanel>
-                    <TextBlock Grid.Column="2" Text="{Binding Size}" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                    <Button x:Name="Delete" Grid.Column="3" Content="&#xE74D;" Style="{StaticResource IconButton}" Width="30" Height="30" FontSize="13"
-                            ToolTip="Remove this mod" Tag="{Binding Path}" Click="RemoveMod_Click" Opacity="0"/>
-                  </Grid>
-                  <DataTemplate.Triggers>
-                    <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
-                      <Setter TargetName="Delete" Property="Opacity" Value="1"/>
-                    </DataTrigger>
-                    <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
-                      <Setter TargetName="Delete" Property="Opacity" Value="1"/>
-                    </DataTrigger>
-                  </DataTemplate.Triggers>
-                </DataTemplate>
-              </ListBox.ItemTemplate>
-            </ListBox>
-            <StackPanel x:Name="ModsEmpty" VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed" Margin="0,0,0,40">
-              <TextBlock Text="&#xE7B8;" Style="{StaticResource Icon}" FontSize="34" Foreground="{DynamicResource Tertiary}"/>
-              <TextBlock Text="No mods yet" Style="{StaticResource Subtitle}" HorizontalAlignment="Center" Margin="0,14,0,4"/>
-              <TextBlock Text="Drop .jar files or a modpack on this window, or press +." Style="{StaticResource Muted}" HorizontalAlignment="Center"/>
-            </StackPanel>
-          </Grid>
-
-          <!-- Activity -->
-          <TextBox x:Name="ActivityLog" Grid.Row="4" Visibility="Collapsed" IsReadOnly="True" TextWrapping="Wrap" Margin="36,16,36,24"
-                   VerticalContentAlignment="Top" Padding="12,10" VerticalScrollBarVisibility="Auto"
-                   FontFamily="Cascadia Mono, Consolas" FontSize="12" Background="{DynamicResource Raised}" BorderThickness="0"/>
-        </Grid>
+          </Button>
+        </StackPanel>
       </Grid>
 
-      <!-- ===== Servers ===== -->
-      <ScrollViewer x:Name="ServersPage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-        <StackPanel Margin="40,32,40,40" MaxWidth="760" HorizontalAlignment="Left" Width="760">
-          <TextBlock Text="Servers" Style="{StaticResource Display}"/>
-          <TextBlock Style="{StaticResource Muted}" Margin="0,6,0,24" FontSize="14"
-                     Text="Token Vault signs you in to these servers only. They show up in Minecraft under Multiplayer."/>
+      <!-- Launch progress: game files, sign-in, start, then "playing" -->
+      <Border x:Name="LaunchPanel" Grid.Row="1" Background="{DynamicResource Raised}" CornerRadius="6" Margin="0,0,0,20" Padding="20,16" Visibility="Collapsed">
+        <StackPanel>
           <Grid>
-            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <TextBox x:Name="ServerAddress" KeyDown="ServerAddress_KeyDown" MinHeight="38"/>
-            <TextBlock x:Name="ServerHint" Text="Server address, like play.example.net" Foreground="{DynamicResource Tertiary}"
-                       IsHitTestVisible="False" Margin="11,0,0,0" VerticalAlignment="Center"/>
-            <Button Grid.Column="1" Content="Add server" Style="{StaticResource Primary}" MinHeight="38" Padding="18,0" Margin="8,0,0,0" Click="AddServer_Click"/>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Orientation="Horizontal">
+              <Border x:Name="Step0Dot" Width="22" Height="22" CornerRadius="11" BorderThickness="1.5">
+                <TextBlock x:Name="Step0Glyph" Text="1" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <TextBlock x:Name="Step0Label" Text="Game files" Margin="10,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+            <Rectangle Grid.Column="1" Height="1.5" Fill="{DynamicResource LineStrong}" Margin="14,0" VerticalAlignment="Center"/>
+            <StackPanel Grid.Column="2" Orientation="Horizontal">
+              <Border x:Name="Step1Dot" Width="22" Height="22" CornerRadius="11" BorderThickness="1.5">
+                <TextBlock x:Name="Step1Glyph" Text="2" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <TextBlock x:Name="Step1Label" Text="Sign-in" Margin="10,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+            <Rectangle Grid.Column="3" Height="1.5" Fill="{DynamicResource LineStrong}" Margin="14,0" VerticalAlignment="Center"/>
+            <StackPanel Grid.Column="4" Orientation="Horizontal">
+              <Border x:Name="Step2Dot" Width="22" Height="22" CornerRadius="11" BorderThickness="1.5">
+                <TextBlock x:Name="Step2Glyph" Text="3" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <TextBlock x:Name="Step2Label" Text="Start" Margin="10,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
           </Grid>
-          <Border Style="{StaticResource Card}" Margin="0,20,0,0">
-            <Grid>
-              <ItemsControl x:Name="ServerList">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate>
-                    <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="16,12,10,12">
-                      <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <Border Style="{StaticResource Tile}" Background="{Binding Tile}">
-                          <TextBlock Text="{Binding Initial}" Foreground="#FFFFFF" FontWeight="SemiBold" FontSize="15" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <StackPanel Grid.Column="1" Margin="14,0" VerticalAlignment="Center">
-                          <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
-                          <TextBlock Text="{Binding Address}" Style="{StaticResource Caption}"/>
-                        </StackPanel>
-                        <Button Grid.Column="2" Content="&#xE74D;" Style="{StaticResource IconButton}" ToolTip="Remove server" Tag="{Binding Entry}" Click="RemoveServer_Click"/>
-                      </Grid>
-                    </Border>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-              <StackPanel x:Name="ServersEmpty" Margin="0,44" HorizontalAlignment="Center">
-                <TextBlock Text="&#xE774;" Style="{StaticResource Icon}" FontSize="30" Foreground="{DynamicResource Tertiary}"/>
-                <TextBlock Text="No servers yet" Style="{StaticResource Subtitle}" HorizontalAlignment="Center" Margin="0,12,0,4"/>
-                <TextBlock Text="Singleplayer works without one." Style="{StaticResource Muted}" HorizontalAlignment="Center"/>
-              </StackPanel>
-            </Grid>
-          </Border>
-          <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-            <TextBlock Text="&#xE946;" Style="{StaticResource Icon}" FontSize="13" Foreground="{DynamicResource Tertiary}" VerticalAlignment="Top" Margin="0,2,10,0"/>
-            <TextBlock Style="{StaticResource Caption}" Width="700"
-                       Text="Servers you add inside Minecraft can't sign you in, because the game never has your account. Add them here instead."/>
-          </StackPanel>
+          <TextBlock x:Name="LaunchTitle" FontSize="16" FontWeight="SemiBold" FontFamily="{StaticResource DisplayFont}" Margin="0,16,0,2"/>
+          <TextBlock x:Name="LaunchDetail" Style="{StaticResource Muted}" FontSize="12.5"/>
+          <ProgressBar x:Name="LaunchProgress" Margin="0,12,0,0" Minimum="0" Maximum="1"/>
         </StackPanel>
-      </ScrollViewer>
+      </Border>
 
-      <!-- ===== Security ===== -->
-      <ScrollViewer x:Name="SecurityPage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-        <StackPanel Margin="40,32,40,40" Width="760" HorizontalAlignment="Left">
-          <Grid>
-            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <Border x:Name="SecurityHero" Width="56" Height="56" Background="{DynamicResource Accent}">
-              <TextBlock x:Name="SecurityHeroIcon" Text="&#xEA18;" Style="{StaticResource Icon}" FontSize="26" Foreground="{DynamicResource OnAccent}"/>
-            </Border>
-            <StackPanel Grid.Column="1" Margin="18,0,0,0" VerticalAlignment="Center">
-              <TextBlock x:Name="SecurityTitle" Text="Your account is protected" Style="{StaticResource Display}"/>
-              <TextBlock x:Name="SecuritySummary" Style="{StaticResource Muted}" FontSize="14" Margin="0,4,0,0"/>
-            </StackPanel>
-          </Grid>
+      <!-- Files a CurseForge pack could not download automatically -->
+      <Border x:Name="MissingPanel" Grid.Row="2" Visibility="Collapsed" Margin="0,0,0,20" Background="{DynamicResource WarnTint}"
+              BorderBrush="{DynamicResource Warn}" BorderThickness="3,0,0,0" Padding="16,12" CornerRadius="4">
+        <StackPanel>
+          <TextBlock x:Name="MissingTitle" FontWeight="SemiBold"/>
+          <TextBlock Style="{StaticResource Muted}" Margin="0,2,0,8"
+                     Text="Their authors don't let other apps download them. Open each page, download the file, then drop it on this window."/>
+          <ItemsControl x:Name="MissingList">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Button Content="{Binding Name}" Tag="{Binding Page}" Style="{StaticResource Link}" Margin="0,2" Click="MissingLink_Click"/>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <Button Content="Done, hide this" Style="{StaticResource Link}" Foreground="{DynamicResource Secondary}" Margin="0,10,0,0" Click="MissingDone_Click"/>
+        </StackPanel>
+      </Border>
 
-          <TextBlock Text="Protection" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,30,0,8"/>
-          <Border Style="{StaticResource Card}">
-            <StackPanel>
-              <Grid Margin="18,14">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Text="&#xE774;" Style="{StaticResource Icon}" FontSize="17" Foreground="{DynamicResource Secondary}" VerticalAlignment="Top" Margin="0,2,16,0"/>
-                <StackPanel Grid.Column="1" Margin="0,0,20,0">
-                  <TextBlock Text="Ask before joining a server" FontWeight="SemiBold"/>
-                  <TextBlock Text="Token Vault asks you each time the game signs in to a server, so a mod can't quietly join as you." Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0"/>
-                </StackPanel>
-                <CheckBox x:Name="ConfirmJoinsSwitch" Grid.Column="2" Style="{StaticResource Switch}" Click="ConfirmJoins_Click"/>
-              </Grid>
-              <Rectangle Style="{StaticResource Rule}"/>
-              <Grid Margin="18,14">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Text="&#xE8C8;" Style="{StaticResource Icon}" FontSize="17" Foreground="{DynamicResource Secondary}" VerticalAlignment="Top" Margin="0,2,16,0"/>
-                <StackPanel Grid.Column="1" Margin="0,0,20,0">
-                  <TextBlock Text="Let the game use the clipboard" FontWeight="SemiBold"/>
-                  <TextBlock Text="Off keeps what you copy, like passwords, away from mods. Turn on to copy and paste in chat." Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0"/>
-                </StackPanel>
-                <CheckBox x:Name="ClipboardSwitch" Grid.Column="2" Style="{StaticResource Switch}" Click="Clipboard_Click"/>
-              </Grid>
-              <Rectangle Style="{StaticResource Rule}"/>
-              <Grid Margin="18,14">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Text="&#xE8BD;" Style="{StaticResource Icon}" FontSize="17" Foreground="{DynamicResource Secondary}" VerticalAlignment="Top" Margin="0,2,16,0"/>
-                <StackPanel Grid.Column="1" Margin="0,0,20,0">
-                  <TextBlock Text="Signed chat (Minecraft 1.19 and newer)" FontWeight="SemiBold"/>
-                  <TextBlock Text="Many servers require it. A mod could copy the chat-signing key and send chat as you for about two days, but it can't sign in as you. Off: unsigned chat, and servers that require signing won't let you join." Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                </StackPanel>
-                <CheckBox x:Name="ChatSigningSwitch" Grid.Column="2" Style="{StaticResource Switch}" Click="ChatSigning_Click"/>
-              </Grid>
-              <Rectangle Style="{StaticResource Rule}"/>
-              <Grid Margin="18,14">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Text="&#xE72E;" Style="{StaticResource Icon}" FontSize="17" Foreground="{DynamicResource Secondary}" VerticalAlignment="Top" Margin="0,2,16,0"/>
-                <StackPanel Grid.Column="1" Margin="0,0,20,0">
-                  <TextBlock Text="Stay signed in on this PC" FontWeight="SemiBold"/>
-                  <TextBlock Text="Saved encrypted for your Windows account. The game can't read it." Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0"/>
-                </StackPanel>
-                <CheckBox x:Name="RememberSwitch" Grid.Column="2" Style="{StaticResource Switch}" Click="Remember_Click"/>
-              </Grid>
-              <Rectangle Style="{StaticResource Rule}"/>
-              <Grid Margin="18,14">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Text="&#xE968;" Style="{StaticResource Icon}" FontSize="17" Foreground="{DynamicResource Secondary}" VerticalAlignment="Top" Margin="0,2,16,0"/>
-                <StackPanel Grid.Column="1" Margin="0,0,20,0">
-                  <TextBlock Text="Sandbox setup" FontWeight="SemiBold"/>
-                  <TextBlock x:Name="NetworkDetail" Text="" Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0"/>
-                </StackPanel>
-                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                  <TextBlock x:Name="NetworkOk" Foreground="{DynamicResource Good}" VerticalAlignment="Center" Visibility="Collapsed"><Run Text="&#xE73E;" FontFamily="{StaticResource IconFont}"/><Run Text="  Approved"/></TextBlock>
-                  <Button x:Name="NetworkButton" Content="Approve" Click="Network_Click"/>
-                </StackPanel>
-              </Grid>
-              <Rectangle Style="{StaticResource Rule}"/>
-              <Grid Margin="18,14">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Text="&#xE77B;" Style="{StaticResource Icon}" FontSize="17" Foreground="{DynamicResource Secondary}" VerticalAlignment="Top" Margin="0,2,16,0"/>
-                <StackPanel Grid.Column="1" Margin="0,0,20,0">
-                  <TextBlock Text="Saved sign-in" FontWeight="SemiBold"/>
-                  <TextBlock x:Name="SavedDetail" Text="" Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0"/>
-                </StackPanel>
-                <Button x:Name="ForgetButton" Grid.Column="2" Content="Sign out" VerticalAlignment="Center" Click="SignOut_Click"/>
-              </Grid>
-            </StackPanel>
-          </Border>
+      <Grid Grid.Row="3">
+        <StackPanel Orientation="Horizontal">
+          <RadioButton x:Name="TabMods" GroupName="Tabs" Style="{StaticResource Tab}" IsChecked="True" Checked="Tab_Checked" AutomationProperties.Name="Mods">
+            <TextBlock><Run Text="Mods"/><Run x:Name="ModCount" Text="" Foreground="{DynamicResource Tertiary}"/></TextBlock>
+          </RadioButton>
+          <RadioButton x:Name="TabFind" GroupName="Tabs" Style="{StaticResource Tab}" Content="Find mods" Checked="Tab_Checked"/>
+          <RadioButton x:Name="TabServers" GroupName="Tabs" Style="{StaticResource Tab}" Checked="Tab_Checked" AutomationProperties.Name="Servers">
+            <TextBlock><Run Text="Servers"/><Run x:Name="ServerCount" Text="" Foreground="{DynamicResource Tertiary}"/></TextBlock>
+          </RadioButton>
+          <RadioButton x:Name="TabLog" GroupName="Tabs" Style="{StaticResource Tab}" Content="Log" Checked="Tab_Checked"/>
+        </StackPanel>
+        <Rectangle Style="{StaticResource Rule}" VerticalAlignment="Bottom"/>
+      </Grid>
 
-          <Grid Margin="0,30,0,8">
-            <TextBlock Text="Activity" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}"/>
-            <Button x:Name="ClearActivityButton" Content="Clear" Style="{StaticResource Link}" HorizontalAlignment="Right" FontWeight="Normal" Click="ClearActivity_Click"/>
-          </Grid>
-          <Border Style="{StaticResource Card}">
-            <Grid>
-              <ItemsControl x:Name="ActivityList">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate>
-                    <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="18,12">
-                      <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <TextBlock Text="{Binding Glyph}" Style="{StaticResource Icon}" FontSize="15" Foreground="{Binding Brush}" VerticalAlignment="Top" Margin="0,2,16,0"/>
-                        <StackPanel Grid.Column="1">
-                          <TextBlock Text="{Binding Title}" FontWeight="SemiBold"/>
-                          <TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" FontSize="12.5"/>
-                        </StackPanel>
-                        <TextBlock Grid.Column="2" Text="{Binding Time}" Style="{StaticResource Caption}" VerticalAlignment="Top" Margin="12,2,0,0"/>
-                      </Grid>
-                    </Border>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-              <StackPanel x:Name="ActivityEmpty" Margin="0,30" HorizontalAlignment="Center">
-                <TextBlock Text="Nothing yet" Style="{StaticResource Subtitle}" HorizontalAlignment="Center"/>
-                <TextBlock Text="Server joins, and anything Token Vault blocks, show up here while you play." Style="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-              </StackPanel>
-            </Grid>
-          </Border>
-
-          <TextBlock Text="How you're protected" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,30,0,12"/>
-          <UniformGrid Columns="2">
-            <StackPanel Margin="0,0,24,18">
-              <TextBlock><Run Text="&#xE72E;" FontFamily="{StaticResource IconFont}" Foreground="{DynamicResource Good}"/><Run Text="  Your sign-in never enters the game" FontWeight="SemiBold"/></TextBlock>
-              <TextBlock Style="{StaticResource Muted}" Margin="0,4,0,0" Text="Minecraft gets a stand-in token that Mojang rejects. Your real tokens stay in Token Vault."/>
+      <!-- ===== Mods: what's installed ===== -->
+      <Grid x:Name="ModsView" Grid.Row="4">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <Grid Margin="0,16,0,8">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBox x:Name="ModFilter" MaxWidth="320" HorizontalAlignment="Left" Width="320" Padding="32,0,10,0" TextChanged="ModFilter_TextChanged"
+                   AutomationProperties.Name="Filter installed mods"/>
+          <TextBlock Text="&#xE71C;" Style="{StaticResource Icon}" FontSize="12" Foreground="{DynamicResource Tertiary}" HorizontalAlignment="Left" Margin="12,0,0,0" IsHitTestVisible="False"/>
+          <TextBlock x:Name="ModFilterHint" Text="Filter installed mods" Foreground="{DynamicResource Tertiary}" IsHitTestVisible="False" Margin="33,0,0,0" VerticalAlignment="Center"/>
+          <Button x:Name="AddModsButton" Grid.Column="1" Margin="8,0,0,0" ToolTip="Add .jar files from your PC" Click="AddMods_Click">
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="&#xE8E5;" FontFamily="{StaticResource IconFont}" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0"/>
+              <TextBlock Text="Add .jar"/>
             </StackPanel>
-            <StackPanel Margin="0,0,24,18">
-              <TextBlock><Run Text="&#xEA18;" FontFamily="{StaticResource IconFont}" Foreground="{DynamicResource Good}"/><Run Text="  Mods run in a Windows sandbox" FontWeight="SemiBold"/></TextBlock>
-              <TextBlock Style="{StaticResource Muted}" Margin="0,4,0,0" Text="They can't open your files, browsers, other launchers or Token Vault, and can only write to their own folder."/>
+          </Button>
+          <Button Grid.Column="2" Style="{StaticResource Primary}" Margin="8,0,0,0" Padding="14,0" Click="FindMods_Click" AutomationProperties.Name="Find mods on Modrinth">
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="&#xE721;" FontFamily="{StaticResource IconFont}" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0"/>
+              <TextBlock Text="Find mods"/>
             </StackPanel>
-            <StackPanel Margin="0,0,24,18">
-              <TextBlock><Run Text="&#xE774;" FontFamily="{StaticResource IconFont}" Foreground="{DynamicResource Good}"/><Run Text="  Token Vault joins servers itself" FontWeight="SemiBold"/></TextBlock>
-              <TextBlock Style="{StaticResource Muted}" Margin="0,4,0,0" Text="Only servers on your list, one connection at a time. The game can't sign in anywhere on its own."/>
-            </StackPanel>
-            <StackPanel Margin="0,0,24,18">
-              <TextBlock><Run Text="&#xE8D7;" FontFamily="{StaticResource IconFont}" Foreground="{DynamicResource Good}"/><Run Text="  Account changes are blocked" FontWeight="SemiBold"/></TextBlock>
-              <TextBlock Style="{StaticResource Muted}" Margin="0,4,0,0" Text="Name changes, skin changes and every other account request from the game are refused."/>
-            </StackPanel>
-          </UniformGrid>
-
-          <TextBlock Text="What Token Vault can't stop" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,18,0,8"/>
-          <Border Style="{StaticResource Card}">
-            <ItemsControl x:Name="LimitsList">
+          </Button>
+        </Grid>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="-10,0,-10,0">
+          <StackPanel Margin="0,0,0,24">
+            <ItemsControl x:Name="ModList">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
-                  <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="18,12">
+                  <Border x:Name="RowBox" Background="Transparent" CornerRadius="4" Padding="10,8">
                     <Grid>
-                      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                      <TextBlock Text="&#xE946;" Style="{StaticResource Icon}" FontSize="15" Foreground="{DynamicResource Tertiary}" VerticalAlignment="Top" Margin="0,2,16,0"/>
-                      <StackPanel Grid.Column="1">
-                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold"/>
-                        <TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" FontSize="12.5"/>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+                      </Grid.ColumnDefinitions>
+                      <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
+                        <TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
                       </StackPanel>
+                      <TextBlock Grid.Column="1" Text="{Binding Size}" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                      <Button x:Name="Delete" Grid.Column="2" Content="&#xE74D;" Style="{StaticResource IconButton}" Width="30" Height="30" FontSize="13"
+                              ToolTip="Remove this mod" Tag="{Binding Path}" Click="RemoveMod_Click" Opacity="0"/>
                     </Grid>
                   </Border>
+                  <DataTemplate.Triggers>
+                    <Trigger SourceName="RowBox" Property="IsMouseOver" Value="True">
+                      <Setter TargetName="RowBox" Property="Background" Value="{DynamicResource Hover}"/>
+                      <Setter TargetName="Delete" Property="Opacity" Value="1"/>
+                    </Trigger>
+                    <Trigger SourceName="Delete" Property="IsKeyboardFocused" Value="True">
+                      <Setter TargetName="Delete" Property="Opacity" Value="1"/>
+                    </Trigger>
+                  </DataTemplate.Triggers>
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
-          </Border>
-        </StackPanel>
-      </ScrollViewer>
-
-      <!-- ===== Settings ===== -->
-      <ScrollViewer x:Name="SettingsPage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-        <StackPanel Margin="40,32,40,40" Width="720" HorizontalAlignment="Left">
-          <TextBlock Text="Settings" Style="{StaticResource Display}"/>
-
-          <TextBlock Text="Game" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,28,0,8"/>
-          <Border Style="{StaticResource Card}">
-            <StackPanel>
-              <Grid Margin="18,14">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel VerticalAlignment="Center">
-                  <TextBlock Text="Memory" FontWeight="SemiBold"/>
-                  <TextBlock Text="How much RAM Minecraft may use." Style="{StaticResource Caption}"/>
-                </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                  <TextBox x:Name="MemoryBox" Width="90" TextAlignment="Right"/>
-                  <TextBlock Text="MB" Style="{StaticResource Muted}" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                </StackPanel>
-              </Grid>
-              <Rectangle Style="{StaticResource Rule}"/>
-              <Grid Margin="18,14">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                  <TextBlock Text="Java" FontWeight="SemiBold"/>
-                  <TextBlock Text="Empty uses the Java Token Vault installs. A JDK 25 adds a self-check before launch." Style="{StaticResource Caption}"/>
-                </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                  <TextBox x:Name="JavaBox" Width="260"/>
-                  <Button Content="Browse…" Margin="8,0,0,0" Click="BrowseJava_Click"/>
-                </StackPanel>
-              </Grid>
+            <StackPanel x:Name="ModsEmpty" Margin="10,30,10,0" Visibility="Collapsed">
+              <TextBlock x:Name="ModsEmptyTitle" Text="No mods yet. Vanilla is a flavour too." Style="{StaticResource Kicker}" FontSize="17"/>
+              <TextBlock x:Name="ModsEmptyDetail" Style="{StaticResource Muted}" Margin="0,4,0,0"
+                         Text="Press Find mods to browse Modrinth, or drop .jar files and modpacks anywhere on this window."/>
             </StackPanel>
-          </Border>
+          </StackPanel>
+        </ScrollViewer>
+      </Grid>
 
-          <TextBlock Text="Sign-in" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,28,0,8"/>
-          <Border Style="{StaticResource Card}">
-            <StackPanel>
-              <CheckBox x:Name="DeviceCodeBox" Margin="18,14">
-                <StackPanel>
-                  <TextBlock Text="Sign in with a code" FontWeight="SemiBold"/>
-                  <TextBlock Text="Type a short code on microsoft.com/link instead of using a browser pop-up." Style="{StaticResource Caption}"/>
-                </StackPanel>
-              </CheckBox>
-              <Rectangle Style="{StaticResource Rule}"/>
-              <Grid Margin="18,14">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                  <TextBlock Text="Microsoft application ID" FontWeight="SemiBold"/>
-                  <TextBlock x:Name="ClientIdHint" Style="{StaticResource Caption}"/>
-                </StackPanel>
-                <TextBox x:Name="ClientIdBox" Grid.Column="1" Width="300" VerticalAlignment="Center" FontFamily="Cascadia Mono, Consolas" FontSize="12"/>
-              </Grid>
-            </StackPanel>
-          </Border>
+      <!-- ===== Find mods: Modrinth ===== -->
+      <Grid x:Name="FindView" Grid.Row="4" Visibility="Collapsed">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <Grid Margin="0,16,0,0">
+          <TextBox x:Name="ModSearch" MinHeight="42" FontSize="14.5" Padding="38,0,10,0" TextChanged="ModSearch_TextChanged" KeyDown="ModSearch_KeyDown"
+                   AutomationProperties.Name="Search Modrinth"/>
+          <TextBlock Text="&#xE721;" Style="{StaticResource Icon}" FontSize="14" Foreground="{DynamicResource Tertiary}" HorizontalAlignment="Left" Margin="14,0,0,0" IsHitTestVisible="False"/>
+          <TextBlock x:Name="ModSearchHint" Text="What are we adding? Try sodium, jei, that one minimap…" FontSize="14.5" Foreground="{DynamicResource Tertiary}"
+                     IsHitTestVisible="False" Margin="39,0,0,0" VerticalAlignment="Center"/>
+        </Grid>
+        <Grid Grid.Row="1" Margin="0,14,0,6">
+          <TextBlock x:Name="ModrinthHeading" Text="Popular on Modrinth" Style="{StaticResource Kicker}"/>
+          <TextBlock x:Name="ModrinthFor" Style="{StaticResource Caption}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+        </Grid>
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Margin="-10,0,-10,0">
+          <StackPanel Margin="0,0,0,24">
+            <TextBlock x:Name="ModrinthStatus" Style="{StaticResource Muted}" Margin="10,6,10,6" Visibility="Collapsed" TextWrapping="Wrap"/>
+            <ItemsControl x:Name="ModrinthList">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border x:Name="RowBox" Background="Transparent" CornerRadius="4" Padding="10,10">
+                    <Grid>
+                      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                      <Grid Width="44" Height="44" VerticalAlignment="Top">
+                        <Border Style="{StaticResource Tile}" Width="44" Height="44" Background="{Binding Tile}">
+                          <TextBlock Text="{Binding Initial}" Foreground="#FFFFFF" FontWeight="SemiBold" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <Image Source="{Binding Icon}" Width="44" Height="44" RenderOptions.BitmapScalingMode="HighQuality">
+                          <Image.Clip><RectangleGeometry Rect="0,0,44,44" RadiusX="4" RadiusY="4"/></Image.Clip>
+                        </Image>
+                      </Grid>
+                      <StackPanel Grid.Column="1" Margin="14,0,16,0" VerticalAlignment="Center">
+                        <TextBlock TextTrimming="CharacterEllipsis" TextWrapping="NoWrap">
+                          <Run Text="{Binding Title, Mode=OneWay}" FontWeight="SemiBold" FontSize="14"/><Run Text="{Binding Byline, Mode=OneWay}" Foreground="{DynamicResource Tertiary}" FontSize="12"/>
+                        </TextBlock>
+                        <TextBlock Text="{Binding Description}" Style="{StaticResource Muted}" FontSize="12.5" Margin="0,3,0,0" TextTrimming="CharacterEllipsis" MaxHeight="36"/>
+                      </StackPanel>
+                      <Button Grid.Column="2" Content="{Binding Action}" IsEnabled="{Binding CanInstall}" Tag="{Binding}" VerticalAlignment="Center"
+                              MinWidth="104" Click="InstallMod_Click"/>
+                    </Grid>
+                  </Border>
+                  <DataTemplate.Triggers>
+                    <Trigger SourceName="RowBox" Property="IsMouseOver" Value="True">
+                      <Setter TargetName="RowBox" Property="Background" Value="{DynamicResource Hover}"/>
+                    </Trigger>
+                  </DataTemplate.Triggers>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </ScrollViewer>
+      </Grid>
 
-          <TextBlock Text="Updates and privacy" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,28,0,8"/>
-          <Border Style="{StaticResource Card}">
-            <StackPanel>
-              <CheckBox x:Name="UpdatesBox" Margin="18,14">
-                <StackPanel>
-                  <TextBlock Text="Keep Token Vault up to date" FontWeight="SemiBold"/>
-                  <TextBlock x:Name="UpdatesHint" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
-                </StackPanel>
-              </CheckBox>
-              <Rectangle Style="{StaticResource Rule}"/>
-              <CheckBox x:Name="StatisticsBox" Margin="18,14">
-                <StackPanel>
-                  <TextBlock Text="Share anonymous usage statistics" FontWeight="SemiBold"/>
-                  <TextBlock x:Name="StatisticsHint" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
-                </StackPanel>
-              </CheckBox>
-            </StackPanel>
-          </Border>
-
-          <TextBlock Text="Storage" Style="{StaticResource Subtitle}" Foreground="{DynamicResource Secondary}" Margin="0,28,0,8"/>
-          <Border Style="{StaticResource Card}">
-            <Grid Margin="18,14">
-              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-              <StackPanel VerticalAlignment="Center">
-                <TextBlock Text="Game files and sign-in data" FontWeight="SemiBold"/>
-                <TextBlock Text="Stored under %LOCALAPPDATA%\TokenVault." Style="{StaticResource Caption}"/>
-              </StackPanel>
-              <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                <Button Content="Game files" Click="OpenInstall_Click"/>
-                <Button Content="Data" Margin="8,0,0,0" Click="OpenData_Click"/>
-              </StackPanel>
-            </Grid>
-          </Border>
-
-          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,24,0,0">
-            <Button Content="Revert" Click="SettingsRevert_Click"/>
-            <Button Content="Save changes" Style="{StaticResource Primary}" Padding="20,0" Margin="8,0,0,0" Click="SettingsSave_Click"/>
+      <!-- ===== Servers (shared by every instance) ===== -->
+      <ScrollViewer x:Name="ServersView" Grid.Row="4" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+        <StackPanel MaxWidth="720" HorizontalAlignment="Left" Margin="0,16,0,24">
+          <TextBlock Style="{StaticResource Muted}" Margin="0,0,0,14"
+                     Text="Token Vault signs you in to these servers and nowhere else. They show up under Multiplayer in every instance. Servers added inside the game can't sign you in, because the game never has your account."/>
+          <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBox x:Name="ServerAddress" KeyDown="ServerAddress_KeyDown" MinHeight="38" AutomationProperties.Name="Server address"/>
+            <TextBlock x:Name="ServerHint" Text="play.example.net" Foreground="{DynamicResource Tertiary}"
+                       IsHitTestVisible="False" Margin="11,0,0,0" VerticalAlignment="Center"/>
+            <Button Grid.Column="1" Content="Add server" MinHeight="38" Padding="18,0" Margin="8,0,0,0" Click="AddServer_Click"/>
+          </Grid>
+          <ItemsControl x:Name="ServerList" Margin="-10,12,-10,0">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border x:Name="RowBox" Background="Transparent" CornerRadius="4" Padding="10,8">
+                  <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Center">
+                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                      <TextBlock Text="{Binding Address}" Style="{StaticResource Caption}"/>
+                    </StackPanel>
+                    <Button Grid.Column="1" Content="&#xE74D;" Style="{StaticResource IconButton}" ToolTip="Remove server" Tag="{Binding Entry}" Click="RemoveServer_Click"/>
+                  </Grid>
+                </Border>
+                <DataTemplate.Triggers>
+                  <Trigger SourceName="RowBox" Property="IsMouseOver" Value="True">
+                    <Setter TargetName="RowBox" Property="Background" Value="{DynamicResource Hover}"/>
+                  </Trigger>
+                </DataTemplate.Triggers>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <StackPanel x:Name="ServersEmpty" Margin="0,24,0,0">
+            <TextBlock Text="No servers yet." Style="{StaticResource Kicker}" FontSize="17"/>
+            <TextBlock Text="Singleplayer doesn't need a guest list." Style="{StaticResource Muted}" Margin="0,4,0,0"/>
           </StackPanel>
         </StackPanel>
       </ScrollViewer>
+
+      <!-- ===== Log ===== -->
+      <TextBox x:Name="ActivityLog" Grid.Row="4" Visibility="Collapsed" IsReadOnly="True" TextWrapping="Wrap" Margin="0,16,0,24"
+               VerticalContentAlignment="Top" Padding="12,10" VerticalScrollBarVisibility="Auto"
+               FontFamily="Cascadia Mono, Consolas" FontSize="12" Background="{DynamicResource Raised}" BorderThickness="0"/>
     </Grid>
 
     <!-- ================= Toast (short confirmations and import progress) ================= -->
-    <Border x:Name="Toast" Grid.Row="1" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,24,24"
-            Background="{DynamicResource Raised}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="10"
+    <Border x:Name="Toast" Grid.Row="2" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,24,24"
+            Background="{DynamicResource Raised}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="6"
             Padding="14,11" MinWidth="240" MaxWidth="440" Visibility="Collapsed" IsHitTestVisible="False">
       <Border.Effect><DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.18"/></Border.Effect>
       <StackPanel>
@@ -614,145 +428,257 @@
       </StackPanel>
     </Border>
 
-    <!-- ================= First run ================= -->
-    <Grid x:Name="Onboarding" Grid.RowSpan="2" Grid.ColumnSpan="2" Background="{DynamicResource Bg}" Visibility="Collapsed">
-      <Button x:Name="OnboardingBack" Style="{StaticResource Link}" Margin="28,56,0,0" VerticalAlignment="Top" FontWeight="Normal"
-              Foreground="{DynamicResource Secondary}" Click="OnboardingBack_Click" Visibility="Collapsed">
-        <StackPanel Orientation="Horizontal">
-          <TextBlock Text="&#xE72B;" FontFamily="{StaticResource IconFont}" FontSize="12" VerticalAlignment="Center" Margin="0,1,8,0"/>
-          <TextBlock Text="Back"/>
-        </StackPanel>
-      </Button>
-      <Grid Width="560" VerticalAlignment="Center" Margin="0,40,0,40">
-        <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-
-        <!-- 1. Welcome -->
-        <StackPanel x:Name="WelcomeStep" HorizontalAlignment="Center">
-          <Image Source="Assets/TokenVault.png" Width="96" Height="96" RenderOptions.BitmapScalingMode="HighQuality"/>
-          <TextBlock Text="Welcome to Token Vault" Style="{StaticResource Display}" FontSize="34" HorizontalAlignment="Center" Margin="0,28,0,10"/>
-          <TextBlock Style="{StaticResource Muted}" FontSize="15.5" TextAlignment="Center" LineHeight="23"
-                     Text="Play Minecraft with the mods you want. Token Vault keeps your account out of their reach."/>
-          <Button Content="Get started" Style="{StaticResource Primary}" MinWidth="220" Height="44" FontSize="14.5" Margin="0,40,0,0"
-                  HorizontalAlignment="Center" Click="OnboardingNext_Click"/>
-        </StackPanel>
-
-        <!-- 2. How it works -->
-        <StackPanel x:Name="SafetyStep" Visibility="Collapsed">
-          <TextBlock Text="How your account stays safe" Style="{StaticResource Display}" HorizontalAlignment="Center"/>
-          <TextBlock Style="{StaticResource Muted}" FontSize="14.5" TextAlignment="Center" Margin="0,10,0,30" LineHeight="21"
-                     Text="Mods can do almost anything inside Minecraft. Token Vault makes sure they can't walk off with your account."/>
-          <Grid Margin="0,0,0,22">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <Border Width="44" Height="44" CornerRadius="10" Background="{DynamicResource AccentTint}" VerticalAlignment="Top">
-              <TextBlock Text="&#xE72E;" Style="{StaticResource Icon}" FontSize="19" Foreground="{DynamicResource Accent}"/>
-            </Border>
-            <StackPanel Grid.Column="1" Margin="18,0,0,0">
-              <TextBlock Text="Mods run in a sandbox" Style="{StaticResource Subtitle}"/>
-              <TextBlock Style="{StaticResource Muted}" Margin="0,3,0,0" LineHeight="20"
-                         Text="Minecraft and every mod run in a locked-down part of Windows. They can't open your files, your browser or other launchers' saved sign-ins."/>
+    <!-- ================= Protection and settings (slides over from the right) ================= -->
+    <Grid x:Name="Drawer" Grid.Row="1" Grid.RowSpan="2" Grid.ColumnSpan="2" Visibility="Collapsed">
+      <Border Background="{DynamicResource Scrim}" MouseDown="Drawer_Scrim"/>
+      <Border x:Name="DrawerPanel" Width="460" HorizontalAlignment="Right" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1,0,0,0">
+        <Border.RenderTransform><TranslateTransform x:Name="DrawerSlide"/></Border.RenderTransform>
+        <Grid>
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+          <Grid Margin="28,22,16,6">
+            <StackPanel>
+              <TextBlock x:Name="SecurityTitle" Text="Vault locked" Style="{StaticResource Headline}" FontSize="26"/>
+              <TextBlock x:Name="SecuritySummary" Style="{StaticResource Muted}" Margin="0,4,0,0"/>
             </StackPanel>
+            <Button Content="&#xE711;" Style="{StaticResource IconButton}" HorizontalAlignment="Right" VerticalAlignment="Top" FontSize="12"
+                    ToolTip="Close" AutomationProperties.Name="Close settings" Click="Drawer_Close"/>
           </Grid>
-          <Grid Margin="0,0,0,22">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <Border Width="44" Height="44" CornerRadius="10" Background="{DynamicResource AccentTint}" VerticalAlignment="Top">
-              <TextBlock Text="&#xE8D7;" Style="{StaticResource Icon}" FontSize="19" Foreground="{DynamicResource Accent}"/>
-            </Border>
-            <StackPanel Grid.Column="1" Margin="18,0,0,0">
-              <TextBlock Text="The game never gets your sign-in" Style="{StaticResource Subtitle}"/>
-              <TextBlock Style="{StaticResource Muted}" Margin="0,3,0,0" LineHeight="20"
-                         Text="Minecraft gets a stand-in pass that's worthless if a mod steals it. Your real sign-in stays with Token Vault, encrypted on this PC."/>
-            </StackPanel>
-          </Grid>
-          <Grid Margin="0,0,0,26">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <Border Width="44" Height="44" CornerRadius="10" Background="{DynamicResource AccentTint}" VerticalAlignment="Top">
-              <TextBlock Text="&#xE8FB;" Style="{StaticResource Icon}" FontSize="19" Foreground="{DynamicResource Accent}"/>
-            </Border>
-            <StackPanel Grid.Column="1" Margin="18,0,0,0">
-              <TextBlock Text="You approve every server" Style="{StaticResource Subtitle}"/>
-              <TextBlock Style="{StaticResource Muted}" Margin="0,3,0,0" LineHeight="20"
-                         Text="Before anything signs in to a server as you, Token Vault asks in its own window. If you didn't just choose Join, choose Block."/>
-            </StackPanel>
-          </Grid>
-          <Border Background="{DynamicResource Raised}" CornerRadius="10" Padding="16,12">
-            <TextBlock Style="{StaticResource Muted}" FontSize="12.5" LineHeight="19"
-                       Text="One honest limit: while you're on a server, a bad mod controls that connection, like any program you run. It can't take your account with it afterwards. Keep valuable accounts to mods you trust."/>
-          </Border>
-          <Button Content="Continue" Style="{StaticResource Primary}" MinWidth="220" Height="44" FontSize="14.5" Margin="0,30,0,0"
-                  HorizontalAlignment="Center" Click="OnboardingNext_Click"/>
-        </StackPanel>
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="28,10,28,32">
 
-        <!-- 3. Sandbox approval -->
-        <StackPanel x:Name="SandboxStep" Visibility="Collapsed" HorizontalAlignment="Center">
-          <Border Width="72" Height="72" CornerRadius="18" Background="{DynamicResource AccentTint}" HorizontalAlignment="Center">
-            <TextBlock Text="&#xE7EF;" Style="{StaticResource Icon}" FontSize="32" Foreground="{DynamicResource Accent}"/>
-          </Border>
-          <TextBlock Text="Set up the sandbox" Style="{StaticResource Display}" HorizontalAlignment="Center" Margin="0,24,0,10"/>
-          <TextBlock Style="{StaticResource Muted}" FontSize="14.5" TextAlignment="Center" LineHeight="21"
-                     Text="Windows asks for an administrator's OK once. It lets the sandbox talk to Token Vault on this PC and see folder names at the top of your drive. No account is created and nothing else changes."/>
-          <Button Content="Set up" Style="{StaticResource Primary}" MinWidth="220" Height="44" FontSize="14.5" Margin="0,32,0,0"
-                  HorizontalAlignment="Center" Click="OnboardingSandbox_Click"/>
-          <TextBlock x:Name="SandboxResult" TextAlignment="Center" Margin="0,14,0,0" FontSize="12.5" Visibility="Collapsed"/>
-          <Button Content="Not now" Style="{StaticResource Link}" FontWeight="Normal" Foreground="{DynamicResource Secondary}"
-                  HorizontalAlignment="Center" Margin="0,16,0,0" Click="OnboardingNext_Click"/>
-        </StackPanel>
+              <TextBlock Text="Protection" Style="{StaticResource Kicker}" Margin="0,8,0,4"/>
+              <Grid Margin="0,10">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,16,0">
+                  <TextBlock Text="Ask before joining a server" FontWeight="SemiBold"/>
+                  <TextBlock Text="A mod can't quietly join a server as you if Token Vault asks first." Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0"/>
+                </StackPanel>
+                <CheckBox x:Name="ConfirmJoinsSwitch" Grid.Column="1" Style="{StaticResource Switch}" Click="ConfirmJoins_Click" AutomationProperties.Name="Ask before joining a server"/>
+              </Grid>
+              <Rectangle Style="{StaticResource Rule}"/>
+              <Grid Margin="0,10">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,16,0">
+                  <TextBlock Text="Let the game use the clipboard" FontWeight="SemiBold"/>
+                  <TextBlock Text="Off keeps whatever you copied (passwords, say) away from mods. On lets you paste in chat." Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0"/>
+                </StackPanel>
+                <CheckBox x:Name="ClipboardSwitch" Grid.Column="1" Style="{StaticResource Switch}" Click="Clipboard_Click" AutomationProperties.Name="Let the game use the clipboard"/>
+              </Grid>
+              <Rectangle Style="{StaticResource Rule}"/>
+              <Grid Margin="0,10">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,16,0">
+                  <TextBlock Text="Signed chat (1.19 and newer)" FontWeight="SemiBold"/>
+                  <TextBlock Text="Many servers insist on it. A mod could borrow the chat-signing key and chat as you for about two days, but it can't sign in as you. Off: servers that require signing won't let you in." Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0"/>
+                </StackPanel>
+                <CheckBox x:Name="ChatSigningSwitch" Grid.Column="1" Style="{StaticResource Switch}" Click="ChatSigning_Click" AutomationProperties.Name="Signed chat"/>
+              </Grid>
+              <Rectangle Style="{StaticResource Rule}"/>
+              <Grid Margin="0,10">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,16,0">
+                  <TextBlock Text="Stay signed in on this PC" FontWeight="SemiBold"/>
+                  <TextBlock Text="Saved encrypted for your Windows account. The game can't read it." Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0"/>
+                </StackPanel>
+                <CheckBox x:Name="RememberSwitch" Grid.Column="1" Style="{StaticResource Switch}" Click="Remember_Click" AutomationProperties.Name="Stay signed in"/>
+              </Grid>
+              <Rectangle Style="{StaticResource Rule}"/>
+              <Grid Margin="0,10">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,16,0">
+                  <TextBlock Text="Sandbox setup" FontWeight="SemiBold"/>
+                  <TextBlock x:Name="NetworkDetail" Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                  <TextBlock x:Name="NetworkOk" Foreground="{DynamicResource Good}" VerticalAlignment="Center" Visibility="Collapsed"><Run Text="&#xE73E;" FontFamily="{StaticResource IconFont}"/><Run Text="  Done"/></TextBlock>
+                  <Button x:Name="NetworkButton" Content="Set up" Click="Network_Click"/>
+                </StackPanel>
+              </Grid>
+              <Rectangle Style="{StaticResource Rule}"/>
+              <Grid Margin="0,10">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,16,0">
+                  <TextBlock Text="Saved sign-in" FontWeight="SemiBold"/>
+                  <TextBlock x:Name="SavedDetail" Style="{StaticResource Caption}" FontSize="12.5" Margin="0,2,0,0"/>
+                </StackPanel>
+                <Button x:Name="ForgetButton" Grid.Column="1" Content="Sign out" VerticalAlignment="Center" Click="SignOut_Click"/>
+              </Grid>
 
-        <!-- 4. Sign in -->
-        <StackPanel x:Name="SignInStep" Visibility="Collapsed" HorizontalAlignment="Center">
-          <Border Width="72" Height="72" CornerRadius="18" Background="{DynamicResource AccentTint}" HorizontalAlignment="Center">
-            <TextBlock Text="&#xE77B;" Style="{StaticResource Icon}" FontSize="32" Foreground="{DynamicResource Accent}"/>
-          </Border>
-          <TextBlock Text="Sign in with Microsoft" Style="{StaticResource Display}" HorizontalAlignment="Center" Margin="0,24,0,10"/>
-          <TextBlock Style="{StaticResource Muted}" FontSize="14.5" TextAlignment="Center" LineHeight="21"
-                     Text="Your browser opens Microsoft's own sign-in page. Your password goes only to Microsoft. Token Vault never sees it, and Minecraft never gets your sign-in."/>
-          <Button x:Name="OnboardingSignInButton" Content="Sign in with Microsoft" Style="{StaticResource Primary}" MinWidth="240" Height="44" FontSize="14.5"
-                  Margin="0,32,0,0" HorizontalAlignment="Center" Click="OnboardingSignIn_Click"/>
-          <TextBlock x:Name="SignInResult" TextAlignment="Center" Margin="0,14,0,0" FontSize="12.5" TextWrapping="Wrap" Visibility="Collapsed"/>
-          <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,16,0,0">
-            <Button Content="Use a code instead" Style="{StaticResource Link}" FontWeight="Normal" Click="OnboardingCode_Click"/>
-            <TextBlock Text="·" Foreground="{DynamicResource Tertiary}" Margin="12,0"/>
-            <Button Content="Skip for now" Style="{StaticResource Link}" FontWeight="Normal" Foreground="{DynamicResource Secondary}" Click="OnboardingNext_Click"/>
-          </StackPanel>
-        </StackPanel>
+              <Grid Margin="0,26,0,4">
+                <TextBlock Text="Lately" Style="{StaticResource Kicker}"/>
+                <Button x:Name="ClearActivityButton" Content="Clear" Style="{StaticResource Link}" HorizontalAlignment="Right" FontWeight="Normal" Click="ClearActivity_Click"/>
+              </Grid>
+              <ItemsControl x:Name="ActivityList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Grid Margin="0,8">
+                      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                      <TextBlock Text="{Binding Glyph}" Style="{StaticResource Icon}" FontSize="14" Foreground="{Binding Brush}" VerticalAlignment="Top" Margin="0,2,12,0"/>
+                      <StackPanel Grid.Column="1">
+                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" FontSize="12.5"/>
+                      </StackPanel>
+                      <TextBlock Grid.Column="2" Text="{Binding Time}" Style="{StaticResource Caption}" VerticalAlignment="Top" Margin="12,2,0,0"/>
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <TextBlock x:Name="ActivityEmpty" Style="{StaticResource Muted}" Margin="0,6,0,0"
+                         Text="Quiet so far. Server joins, and anything the vault turns away, show up here while you play."/>
 
-        <!-- 5. Done -->
-        <StackPanel x:Name="DoneStep" Visibility="Collapsed" HorizontalAlignment="Center">
-          <Border Width="72" Height="72" CornerRadius="36" Background="{DynamicResource Accent}" HorizontalAlignment="Center">
-            <TextBlock Text="&#xE73E;" Style="{StaticResource Icon}" FontSize="32" Foreground="{DynamicResource OnAccent}"/>
-          </Border>
-          <TextBlock Text="You're all set" Style="{StaticResource Display}" HorizontalAlignment="Center" Margin="0,24,0,10"/>
-          <TextBlock x:Name="DoneDetail" Style="{StaticResource Muted}" FontSize="14.5" TextAlignment="Center" LineHeight="21"
-                     Text="Pick an instance in your library and press Play, or drop a modpack onto the window."/>
-          <Border x:Name="StatisticsCard" Style="{StaticResource Card}" Padding="18,14" Margin="0,28,0,0">
-            <CheckBox x:Name="OnboardingStatistics">
-              <StackPanel>
-                <TextBlock Text="Share anonymous usage statistics" FontWeight="SemiBold"/>
-                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" FontSize="12.5"
-                           Text="Which features get used and whether launches work. Never your account, servers, mods or files. You can change this in Settings."/>
+              <TextBlock Text="What it can't stop" Style="{StaticResource Kicker}" Margin="0,26,0,4"/>
+              <ItemsControl x:Name="LimitsList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <StackPanel Margin="0,8">
+                      <TextBlock Text="{Binding Title}" FontWeight="SemiBold"/>
+                      <TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" FontSize="12.5"/>
+                    </StackPanel>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+
+              <TextBlock Text="Game" Style="{StaticResource Kicker}" Margin="0,26,0,4"/>
+              <Grid Margin="0,10">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                  <TextBlock Text="Memory" FontWeight="SemiBold"/>
+                  <TextBlock Text="How much RAM Minecraft gets." Style="{StaticResource Caption}"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                  <TextBox x:Name="MemoryBox" Width="84" TextAlignment="Right" AutomationProperties.Name="Memory in MB"/>
+                  <TextBlock Text="MB" Style="{StaticResource Muted}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                </StackPanel>
+              </Grid>
+              <Rectangle Style="{StaticResource Rule}"/>
+              <StackPanel Margin="0,10">
+                <TextBlock Text="Java" FontWeight="SemiBold"/>
+                <TextBlock Text="Leave empty to use the Java Token Vault installs. A JDK 25 adds a self-check before launch." Style="{StaticResource Caption}"/>
+                <Grid Margin="0,8,0,0">
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBox x:Name="JavaBox" AutomationProperties.Name="Java path"/>
+                  <Button Grid.Column="1" Content="Browse…" Margin="8,0,0,0" Click="BrowseJava_Click"/>
+                </Grid>
               </StackPanel>
-            </CheckBox>
-          </Border>
-          <Button Content="Start playing" Style="{StaticResource Primary}" MinWidth="220" Height="44" FontSize="14.5" Margin="0,32,0,0"
-                  HorizontalAlignment="Center" Click="OnboardingFinish_Click"/>
-        </StackPanel>
 
-        <StackPanel x:Name="OnboardingDots" Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,44,0,0">
-          <Ellipse Width="7" Height="7" Margin="4,0"/><Ellipse Width="7" Height="7" Margin="4,0"/><Ellipse Width="7" Height="7" Margin="4,0"/>
-          <Ellipse Width="7" Height="7" Margin="4,0"/><Ellipse Width="7" Height="7" Margin="4,0"/>
-        </StackPanel>
-      </Grid>
+              <TextBlock Text="Sign-in" Style="{StaticResource Kicker}" Margin="0,26,0,4"/>
+              <CheckBox x:Name="DeviceCodeBox" Margin="0,10">
+                <StackPanel>
+                  <TextBlock Text="Sign in with a code" FontWeight="SemiBold"/>
+                  <TextBlock Text="Type a short code at microsoft.com/link instead of a browser pop-up." Style="{StaticResource Caption}"/>
+                </StackPanel>
+              </CheckBox>
+              <Rectangle Style="{StaticResource Rule}"/>
+              <StackPanel Margin="0,10">
+                <TextBlock Text="Microsoft application ID" FontWeight="SemiBold"/>
+                <TextBlock x:Name="ClientIdHint" Style="{StaticResource Caption}"/>
+                <TextBox x:Name="ClientIdBox" Margin="0,8,0,0" FontFamily="Cascadia Mono, Consolas" FontSize="12" AutomationProperties.Name="Microsoft application ID"/>
+              </StackPanel>
+
+              <TextBlock Text="Updates and privacy" Style="{StaticResource Kicker}" Margin="0,26,0,4"/>
+              <CheckBox x:Name="UpdatesBox" Margin="0,10">
+                <StackPanel>
+                  <TextBlock Text="Keep Token Vault up to date" FontWeight="SemiBold"/>
+                  <TextBlock x:Name="UpdatesHint" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+                </StackPanel>
+              </CheckBox>
+              <Rectangle Style="{StaticResource Rule}"/>
+              <CheckBox x:Name="StatisticsBox" Margin="0,10">
+                <StackPanel>
+                  <TextBlock Text="Share anonymous usage statistics" FontWeight="SemiBold"/>
+                  <TextBlock x:Name="StatisticsHint" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+                </StackPanel>
+              </CheckBox>
+
+              <TextBlock Text="Storage" Style="{StaticResource Kicker}" Margin="0,26,0,4"/>
+              <Grid Margin="0,10">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                  <TextBlock Text="Where things live" FontWeight="SemiBold"/>
+                  <TextBlock Text="Game files in C:\TokenVault, sign-in data under %LOCALAPPDATA%\TokenVault." Style="{StaticResource Caption}"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                  <Button Content="Game" Click="OpenInstall_Click"/>
+                  <Button Content="Data" Margin="8,0,0,0" Click="OpenData_Click"/>
+                </StackPanel>
+              </Grid>
+
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,24,0,0">
+                <Button Content="Revert" Click="SettingsRevert_Click"/>
+                <Button Content="Save changes" Style="{StaticResource Primary}" Padding="20,0" Margin="8,0,0,0" Click="SettingsSave_Click"/>
+              </StackPanel>
+            </StackPanel>
+          </ScrollViewer>
+        </Grid>
+      </Border>
     </Grid>
 
+    <!-- ================= First run: one page, three things ================= -->
+    <ScrollViewer x:Name="Onboarding" Grid.Row="1" Grid.RowSpan="2" Grid.ColumnSpan="2" Background="{DynamicResource Bg}" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+      <StackPanel Width="580" HorizontalAlignment="Center" Margin="0,26,0,30">
+        <TextBlock Text="Mods get the game." Style="{StaticResource Headline}" FontSize="34"/>
+        <TextBlock Text="Not your account." Style="{StaticResource Headline}" FontSize="34" Foreground="{DynamicResource Accent}"/>
+        <TextBlock Style="{StaticResource Muted}" FontSize="14.5" LineHeight="22" Margin="0,12,0,0"
+                   Text="Token Vault runs Minecraft in a Windows sandbox and keeps your Microsoft sign-in to itself. The game only ever gets a stand-in pass, which is worthless to anything that steals it."/>
+
+        <Rectangle Style="{StaticResource Rule}" Margin="0,22,0,0"/>
+        <Grid Margin="0,14">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="48"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBlock Text="01" FontFamily="{StaticResource DisplayFont}" FontSize="20" Foreground="{DynamicResource Tertiary}"/>
+          <StackPanel Grid.Column="1" Margin="0,0,16,0">
+            <TextBlock Text="Build the sandbox" Style="{StaticResource Kicker}" FontSize="16"/>
+            <TextBlock Style="{StaticResource Muted}" Margin="0,3,0,0" FontSize="12.5"
+                       Text="Windows asks an administrator once, so the sandbox can reach Token Vault and see folder names at the top of your drive. No new accounts. Nothing else changes."/>
+            <TextBlock x:Name="SandboxResult" FontSize="12.5" Margin="0,6,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
+          </StackPanel>
+          <Button x:Name="OnboardingSandboxButton" Grid.Column="2" Content="Set up" MinWidth="110" VerticalAlignment="Top" Click="OnboardingSandbox_Click"/>
+        </Grid>
+        <Rectangle Style="{StaticResource Rule}"/>
+        <Grid Margin="0,14">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="48"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBlock Text="02" FontFamily="{StaticResource DisplayFont}" FontSize="20" Foreground="{DynamicResource Tertiary}"/>
+          <StackPanel Grid.Column="1" Margin="0,0,16,0">
+            <TextBlock Text="Sign in with Microsoft" Style="{StaticResource Kicker}" FontSize="16"/>
+            <TextBlock Style="{StaticResource Muted}" Margin="0,3,0,0" FontSize="12.5"
+                       Text="Your browser opens Microsoft's own page. Your password goes to Microsoft, not to Token Vault, and certainly not to a mod."/>
+            <TextBlock x:Name="SignInResult" FontSize="12.5" Margin="0,6,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
+            <Button Content="No browser? Use a code instead" Style="{StaticResource Link}" FontWeight="Normal" FontSize="12.5" Margin="0,6,0,0" Click="OnboardingCode_Click"/>
+          </StackPanel>
+          <Button x:Name="OnboardingSignInButton" Grid.Column="2" Content="Sign in" MinWidth="110" VerticalAlignment="Top" Click="OnboardingSignIn_Click"/>
+        </Grid>
+        <Rectangle Style="{StaticResource Rule}"/>
+        <Grid x:Name="StatisticsCard" Margin="0,14">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="48"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <TextBlock Text="03" FontFamily="{StaticResource DisplayFont}" FontSize="20" Foreground="{DynamicResource Tertiary}"/>
+          <CheckBox x:Name="OnboardingStatistics" Grid.Column="1">
+            <StackPanel>
+              <TextBlock Text="Tell us what breaks" Style="{StaticResource Kicker}" FontSize="16"/>
+              <TextBlock Style="{StaticResource Muted}" Margin="0,3,0,0" FontSize="12.5"
+                         Text="Anonymous statistics: which features get used and whether launches work. Never your account, servers, mods or files. Optional, and you can change it later."/>
+            </StackPanel>
+          </CheckBox>
+        </Grid>
+        <Rectangle Style="{StaticResource Rule}"/>
+
+        <TextBlock Style="{StaticResource Caption}" FontSize="12.5" LineHeight="19" Margin="0,14,0,0"
+                   Text="The honest bit: while you're on a server, a bad mod controls that connection like any program you run. It can't take your account with it when you leave. Keep valuable accounts to mods you trust."/>
+        <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
+          <Button Content="Let's play" Style="{StaticResource Primary}" MinWidth="180" Height="48" FontSize="15" Click="OnboardingFinish_Click"/>
+          <TextBlock Text="Skipped something? It's all under the gear, top right." Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="18,0,0,0"/>
+        </StackPanel>
+      </StackPanel>
+    </ScrollViewer>
+
     <!-- ================= Dialog overlay ================= -->
-    <Grid x:Name="Overlay" Grid.RowSpan="2" Grid.ColumnSpan="2" Background="{DynamicResource Scrim}" Visibility="Collapsed">
+    <Grid x:Name="Overlay" Grid.Row="1" Grid.RowSpan="2" Grid.ColumnSpan="2" Background="{DynamicResource Scrim}" Visibility="Collapsed">
       <!-- New instance -->
-      <Border x:Name="NewInstanceCard" Width="460" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="12"
+      <Border x:Name="NewInstanceCard" Width="460" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="6"
               HorizontalAlignment="Center" VerticalAlignment="Center" Padding="28,24" Visibility="Collapsed">
         <StackPanel>
           <TextBlock Text="New instance" Style="{StaticResource Title}"/>
-          <TextBlock Style="{StaticResource Muted}" Margin="0,6,0,18" Text="Any Minecraft release from 1.8, with or without a mod loader. Token Vault downloads everything when you first press Play."/>
+          <TextBlock Style="{StaticResource Muted}" Margin="0,6,0,18" Text="Any release from 1.8 on, with or without a mod loader. Nothing downloads until you press Play."/>
           <TextBlock Text="Name" FontWeight="SemiBold" Margin="0,0,0,6"/>
-          <TextBox x:Name="NewName"/>
+          <TextBox x:Name="NewName" AutomationProperties.Name="Instance name"/>
           <Grid Margin="0,14,0,0">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
             <StackPanel>
@@ -764,14 +690,14 @@
               <ComboBox x:Name="NewLoader"/>
             </StackPanel>
           </Grid>
-          <TextBlock x:Name="NewHint" Style="{StaticResource Caption}" Margin="0,10,0,0" Text="The newest stable loader build is chosen automatically."/>
+          <TextBlock x:Name="NewHint" Style="{StaticResource Caption}" Margin="0,10,0,0" Text="The newest stable loader build is picked for you."/>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,24,0,0">
             <Button Content="Cancel" Click="NewInstanceCancel_Click"/>
             <Button Content="Create" Style="{StaticResource Primary}" Padding="22,0" Margin="8,0,0,0" Click="NewInstanceCreate_Click"/>
           </StackPanel>
         </StackPanel>
       </Border>
-      <Border x:Name="DialogCard" Width="460" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="12"
+      <Border x:Name="DialogCard" Width="460" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="6"
               HorizontalAlignment="Center" VerticalAlignment="Center" Padding="28,24">
         <StackPanel>
           <TextBlock x:Name="DialogTitle" Style="{StaticResource Title}"/>
@@ -785,19 +711,5 @@
         </StackPanel>
       </Border>
     </Grid>
-
-    <!-- ================= Title bar (drawn last, so it stays on top) ================= -->
-    <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0" IsHitTestVisible="False">
-      <Image Source="Assets/TokenVault.png" Width="18" Height="18" RenderOptions.BitmapScalingMode="HighQuality"/>
-      <TextBlock Text="Token Vault" FontSize="12.5" FontWeight="SemiBold" Margin="10,0,0,0" VerticalAlignment="Center"/>
-    </StackPanel>
-    <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
-      <Button Style="{StaticResource CaptionButton}" Content="&#xE921;" ToolTip="Minimize" WindowChrome.IsHitTestVisibleInChrome="True"
-              AutomationProperties.Name="Minimize" Click="Minimize_Click"/>
-      <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}" Content="&#xE922;" ToolTip="Maximize" WindowChrome.IsHitTestVisibleInChrome="True"
-              AutomationProperties.Name="Maximize" Click="Maximize_Click"/>
-      <Button Style="{StaticResource CloseButton}" Content="&#xE8BB;" ToolTip="Close" WindowChrome.IsHitTestVisibleInChrome="True"
-              AutomationProperties.Name="Close" Click="Close_Click"/>
-    </StackPanel>
   </Grid>
 </Window>

@@ -50,7 +50,8 @@ function Save-Shot([string]$Name) {
 }
 
 function Find-Control([string]$Name, [string]$Type = 'Button') {
-    $types = @{ Button = [System.Windows.Automation.ControlType]::Button; RadioButton = [System.Windows.Automation.ControlType]::RadioButton }
+    $types = @{ Button = [System.Windows.Automation.ControlType]::Button; RadioButton = [System.Windows.Automation.ControlType]::RadioButton
+                Edit = [System.Windows.Automation.ControlType]::Edit }
     $condition = New-Object System.Windows.Automation.AndCondition (
         (New-Object System.Windows.Automation.PropertyCondition ($A::NameProperty, $Name)),
         (New-Object System.Windows.Automation.PropertyCondition ($A::ControlTypeProperty, $types[$Type])))
@@ -69,27 +70,29 @@ function Invoke-Control([string]$Name, [string]$Type = 'Button', [int]$Wait = 15
     Start-Sleep -Milliseconds $Wait
 }
 
+function Set-Text([string]$Name, [string]$Text, [int]$Wait = 1500) {
+    (Find-Control $Name 'Edit').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($Text)
+    Start-Sleep -Milliseconds $Wait
+}
+
 function Step([string]$What, [scriptblock]$Action) {
     try { & $Action } catch { $failures.Add("${What}: $($_.Exception.Message)"); Write-Host "::warning::${What}: $($_.Exception.Message)" }
 }
-
 # ---- Light theme, first run
 Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' AppsUseLightTheme 1 -Type DWord -Force
 Start-App
-Step 'welcome'   { Save-Shot '01-welcome' }
-Step 'safety'    { Invoke-Control 'Get started'; Save-Shot '02-how-it-works' }
-Step 'sandbox'   { Invoke-Control 'Continue'; Save-Shot '03-sandbox' }
-Step 'sign-in'   { Invoke-Control 'Not now'; Save-Shot '04-sign-in' }
-Step 'done'      { Invoke-Control 'Skip for now'; Save-Shot '05-done' }
-Step 'library'   { Invoke-Control 'Start playing'; Save-Shot '06-library' }
-Step 'security'  { Invoke-Control 'Security' 'RadioButton'; Save-Shot '07-security' }
-Step 'settings'  { Invoke-Control 'Settings' 'RadioButton'; Save-Shot '08-settings' }
+Step 'first run' { Save-Shot '01-first-run' }
+Step 'mods'      { Invoke-Control "Let's play"; Save-Shot '02-mods' }
+Step 'find mods' { Invoke-Control 'Find mods' 'RadioButton' -Wait 6000; Save-Shot '03-find-mods' }  # popular mods, from Modrinth
+Step 'search'    { Set-Text 'Search Modrinth' 'minimap' -Wait 5000; Save-Shot '04-search' }
+Step 'servers'   { Invoke-Control 'Servers' 'RadioButton'; Save-Shot '05-servers' }
+Step 'settings'  { Invoke-Control 'Settings'; Save-Shot '06-protection'; Invoke-Control 'Close settings' }
 Step 'play'      {
-    Invoke-Control 'Library' 'RadioButton'
+    Invoke-Control 'Mods' 'RadioButton'
     Invoke-Control 'Play' -Wait 2000
-    Save-Shot '09-setup-prompt'
+    Save-Shot '07-setup-prompt'
     Invoke-Control 'Continue' -Wait 9000   # runs the one-time setup (no UAC prompt on CI runners), then starts downloading
-    Save-Shot '10-launching'
+    Save-Shot '08-launching'
 }
 Step 'stop'      { Invoke-Control 'Stop' -Wait 2500 }
 $proc.Refresh()
@@ -100,8 +103,9 @@ Start-Sleep -Seconds 2
 # ---- Dark theme, returning player
 Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' AppsUseLightTheme 0 -Type DWord -Force
 Start-App
-Step 'library-dark'  { Save-Shot '11-library-dark' }
-Step 'security-dark' { Invoke-Control 'Security' 'RadioButton'; Save-Shot '12-security-dark' }
+Step 'mods-dark'       { Save-Shot '09-mods-dark' }
+Step 'find-mods-dark'  { Invoke-Control 'Find mods' 'RadioButton' -Wait 6000; Save-Shot '10-find-mods-dark' }
+Step 'protection-dark' { Invoke-Control 'Settings'; Save-Shot '11-protection-dark' }
 $proc.Refresh()
 if ($proc.HasExited) { Show-Crash; throw "Token Vault exited during the dark-theme run (code $($proc.ExitCode))." }
 Stop-Process -Id $proc.Id -Force

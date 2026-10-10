@@ -85,13 +85,13 @@ gameplay stream. Testing must not label this project an all-purpose mod sandbox.
 
 ## Saved sign-in encryption (release 1.0)
 
-1. On a PC with a TPM 2.0: sign in, close Token Vault, and check the Security page reports
+1. On a PC with a TPM 2.0: sign in, close Token Vault, and check the Protection panel reports
    "TPM + DPAPI, AES-256-GCM". Copy `%LOCALAPPDATA%\TokenVault\Data\vault.bin` to another PC or user
    and confirm Token Vault there asks for a fresh sign-in instead of using it.
-2. On a PC without a TPM (or with it disabled): the Security page reports "DPAPI, AES-256-GCM" and
+2. On a PC without a TPM (or with it disabled): the Protection panel reports "DPAPI, AES-256-GCM" and
    sign-in is remembered across restarts.
 3. With a sign-in saved by an earlier build: start 1.0, confirm no new sign-in is needed, and that the
-   Security page shows the new format after the next token refresh.
+   Protection panel shows the new format after the next token refresh.
 4. Sign out, restore the old `vault.bin` from a copy, start Token Vault: it must ask for a new sign-in
    (the TPM key was destroyed).
 
@@ -115,3 +115,9 @@ gameplay stream. Testing must not label this project an all-purpose mod sandbox.
    release zip with a modified one: the update is refused and nothing changes.
 8. **Statistics.** With a test PostHog project key, answer "No thanks": nothing is sent (check with a proxy).
    Answer yes: events arrive without account names, servers or paths.
+9. **Find mods.** On a Fabric instance, Find mods lists popular mods for its version. Install Sodium: it and
+   Fabric API (if missing) land in `mods`, and both rows say Installed. Mods a pack already brought show Installed.
+   Installing while the game runs is refused. A vanilla instance offers no mods.
+10. **Old game folder.** Make `C:\TokenVault` inherit its permissions (`icacls C:\TokenVault /reset`) and start
+    Token Vault: the log says it was made private, no error shows, and `icacls` lists only you, SYSTEM,
+    Administrators and the sandbox. Put a junction inside it and repeat: Token Vault refuses the folder instead.

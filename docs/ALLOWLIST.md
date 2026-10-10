@@ -33,7 +33,7 @@ Certificate responses contain a profile/chat private signing key. The JVM needs
 that key for signed chat. It is not the Minecraft bearer token and does not
 replace online-mode join authentication. A malicious mod can copy it and sign
 chat as the player until it expires (about two days). Turning "Signed chat" off
-on the Security page removes this route from the effective list.
+on the Protection panel removes this route from the effective list.
 
 Every request, including one with a wrong bearer, counts toward a limit of 120
 per minute.
