@@ -198,12 +198,23 @@ public partial class MainWindow : Window
             var game = sandbox;
             var started = DateTime.UtcNow;
             telemetry.Track("game_launched", new Dictionary<string, string> { ["minecraft_version"] = instance.MinecraftVersion, ["loader"] = instance.Loader });
-            int code = await Task.Run(() => JavaLauncher.LaunchAsync(launch, session.Descriptor, game, line =>
+            // The sandbox may not confine the mouse itself, so Token Vault holds it in the game window while it's captured.
+            CursorLock? cursorLock = null;
+            int code;
+            try
             {
-                Log(line);
-                if (line.StartsWith("Starting Minecraft", StringComparison.Ordinal))
-                    Dispatcher.BeginInvoke(() => LaunchPlaying(instance.Name, account.Profile.Name));
-            }, cts.Token, process => origin.Allow((client, server) => LoopbackPeers.OwnerOf(client, server) is int pid && process.Contains(pid))));
+                code = await Task.Run(() => JavaLauncher.LaunchAsync(launch, session.Descriptor, game, line =>
+                {
+                    Log(line);
+                    if (line.StartsWith("Starting Minecraft", StringComparison.Ordinal))
+                        Dispatcher.BeginInvoke(() => LaunchPlaying(instance.Name, account.Profile.Name));
+                }, cts.Token, process =>
+                {
+                    origin.Allow((client, server) => LoopbackPeers.OwnerOf(client, server) is int pid && process.Contains(pid));
+                    cursorLock = CursorLock.Start(process);
+                }));
+            }
+            finally { cursorLock?.Dispose(); }
             telemetry.Track("game_exited", new Dictionary<string, string>
             {
                 ["result"] = code == 0 ? "ok" : "error", ["minutes"] = ((int)(DateTime.UtcNow - started).TotalMinutes).ToString(System.Globalization.CultureInfo.InvariantCulture)
@@ -981,23 +992,26 @@ public partial class MainWindow : Window
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => Observe(message)); return; }
         string[] part = message.Split(':', 3);
         string Server(string host) => settings.Servers.FirstOrDefault(s => s.Host == host)?.Name ?? host;
+        // Three levels. Alert (red, counted on the shelf): something the game or another program did that the vault had
+        // to stop. Notice (amber): a join that didn't work, or something to fix in how you join. Info: routine events.
+        // Requests vanilla Minecraft makes on its own (blocklist, telemetry) are refused without a word.
         ActivityItem? item = (part[0], part.ElementAtOrDefault(1), part.ElementAtOrDefault(2)) switch
         {
-            ("broker", "authenticated", var host) => new("\uE73E", Brush("Good"), $"Signed in to {Server(host!)}", "Token Vault made the connection. The game never saw your token."),
-            ("broker", "approved", var host) => new("\uE8FB", Brush("Good"), $"You approved joining {Server(host!)}", "Approved in Token Vault's window."),
-            ("broker", "blocked", var host) => new("\uE733", Brush("Bad"), $"Blocked a join to {Server(host!)}", "It wasn't approved. If you didn't try to join, a mod may have."),
-            ("broker", "failed", var rest) => new("\uE783", Brush("Bad"), $"Couldn't join {Server(rest!.Split(':')[0])}", "The game shows the reason on its disconnect screen."),
-            ("broker", "foreign", var host) => new("\uE733", Brush("Bad"), $"Refused a connection to {Server(host!)}", "Something other than the game tried to use your sign-in. It was turned away."),
-            ("broker", "expired", var host) => new("\uE783", Brush("Bad"), $"Couldn't join {Server(host!)}", "This game session's sign-in expired. Close Minecraft and press Play again."),
-            ("broker", "busy", var host) => new("\uE733", Brush("Bad"), $"Blocked a second connection to {Server(host!)}", "Only one connection at a time is allowed. Something tried to open another."),
-            ("http", _, "join-always-denied") => new("\uE733", Brush("Bad"), "Blocked a direct server sign-in", "The game asked to sign in to a server by itself. Only Token Vault does that."),
+            ("broker", "authenticated", var host) => new("", Brush("Good"), $"Signed in to {Server(host!)}", "Token Vault made the connection. The game never saw your token."),
+            ("broker", "approved", var host) => new("", Brush("Good"), $"You approved joining {Server(host!)}", "Approved in Token Vault's window."),
+            ("broker", "blocked", var host) => new("", Brush("Warn"), $"Didn't join {Server(host!)}", "The join wasn't approved, so nothing was signed in. If you didn't start it, that's the vault doing its job."),
+            ("broker", "failed", var rest) => new("", Brush("Warn"), $"Couldn't join {Server(rest!.Split(':')[0])}", "The server or the connection had a problem. The game's disconnect screen says why."),
+            ("broker", "expired", var host) => new("", Brush("Warn"), $"Couldn't join {Server(host!)}", "This game session's sign-in ran out. Close Minecraft and press Play again."),
+            ("broker", "ratelimited", var host) => new("", Brush("Warn"), $"Slow down on {Server(host!)}", "Lots of reconnects in a row. Wait a few seconds, then join again."),
+            ("http", _, "join-always-denied") => new("", Brush("Warn"), "Kept a sign-in inside the vault", "The game tried to sign in by itself. That's usually a server added inside Minecraft (add it on the Servers tab instead) or a mod's online feature, which won't work. Nothing was signed in."),
+            ("broker", "foreign", var host) => new("", Brush("Bad"), $"Turned away another program at {Server(host!)}", "Something that isn't Minecraft tried to use your sign-in.", Alert: true),
+            ("broker", "busy", var host) => new("", Brush("Bad"), $"Turned away a second connection to {Server(host!)}", "One connection at a time. If you didn't just double-join, a mod tried to open another.", Alert: true),
             ("http", _, var route) when route is not null && (route.StartsWith("denied", StringComparison.Ordinal) || route == "unknown-or-forbidden") =>
-                new("\uE733", Brush("Bad"), "Blocked an account request", "The game asked Minecraft's services for something outside the allowed list (for example a name or skin change)."),
-            ("session", "started", _) => new("\uE768", Brush("Secondary"), "Game session started", "Your stand-in token was created for this session."),
-            ("session", "closed", _) => new("\uE71A", Brush("Secondary"), "Game session ended", "The stand-in token and local connections were closed."),
+                new("", Brush("Bad"), "Turned away an account change", "The game asked to change something on your account, like your name or skin. The vault doesn't allow that.", Alert: true),
+            ("session", "started", _) => new("", Brush("Secondary"), "Game session started", "Your stand-in token was created for this session."),
+            ("session", "closed", _) => new("", Brush("Secondary"), "Game session ended", "The stand-in token and local connections were closed."),
             _ => null
-        };
-        if ((part[0], part.ElementAtOrDefault(1)) is ("broker", "connected") && part.ElementAtOrDefault(2) is { } live)
+        };        if ((part[0], part.ElementAtOrDefault(1)) is ("broker", "connected") && part.ElementAtOrDefault(2) is { } live)
         {
             ConnectionText.Text = $"Signed in to {Server(live)} as {identity?.Profile.Name ?? "you"}. Didn't join this yourself, or something looks wrong? Disconnect.";
             ConnectionBar.Visibility = Visibility.Visible;
@@ -1012,7 +1026,8 @@ public partial class MainWindow : Window
         if (item is null) return;
         activity.Insert(0, item);
         if (activity.Count > 200) activity.RemoveAt(activity.Count - 1);
-        if (item.Brush == Brush("Bad")) { unseenBlocks++; Log(item.Title); }
+        if (item.Alert) unseenBlocks++;
+        if (item.Alert || item.Brush == Brush("Warn")) Log(item.Title);
         RefreshSecurity();
     }
 
@@ -1381,7 +1396,7 @@ public sealed record ServerRow(ServerEntry Entry)
     public string Address => Entry.Port == 25565 ? Entry.Host : $"{Entry.Host}:{Entry.Port}";
 }
 
-public sealed record ActivityItem(string Glyph, Brush Brush, string Title, string Detail)
+public sealed record ActivityItem(string Glyph, Brush Brush, string Title, string Detail, bool Alert = false)
 {
     public string Time { get; } = DateTime.Now.ToString("HH:mm");
 }
