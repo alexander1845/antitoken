@@ -174,16 +174,17 @@ dotnet run --project tests/TokenVault.Tests -c Release   # security regression s
 
 Push a tag such as `v1.1.0` and CI builds (with that version), tests and publishes a GitHub release.
 
-**Update signing (once).** Run `pwsh scripts/New-UpdateSigningKey.ps1`. Store the private key it writes as
-the repository **secret** `UPDATE_SIGNING_KEY` (then delete the file or keep it offline) and the public
-key it prints as the repository **variable** `UPDATE_PUBLIC_KEY`. Releases then carry a signed
-`TokenVault-update.json`, and builds carry the public key so installed copies can update themselves.
-Without these, builds only tell players that a release exists. Anyone holding the private key can push
-code to every installed copy: never commit or share it.
+**Update signing.** The public half of the release key is in `Directory.Build.props`, so every build can
+verify updates. Store the private key as the repository **secret** `UPDATE_SIGNING_KEY`; the release job
+then publishes a signed `TokenVault-update.json` next to the zip. Without the secret, releases still work
+but installed copies only tell players about them. Anyone holding the private key can push code to every
+installed copy: never commit or share it. To replace the key, run `pwsh scripts/New-UpdateSigningKey.ps1`
+and update both the secret and `TokenVaultUpdatePublicKey` (players then download one release by hand).
 
-**Usage statistics.** Set the repository **variable** `POSTHOG_PROJECT_KEY` to your PostHog *project*
-key (`phc_…`, public by design). Never use a personal API key (`phx_…`): it is a secret that grants access
-to your PostHog account, and the build refuses it. In PostHog, turn on "Discard client IP data".
+**Usage statistics.** The PostHog *project* key (`phc_…`, public by design) is in `Directory.Build.props`
+(`PostHogProjectKey`, with `PostHogHost` set to the US cloud; use `https://eu.i.posthog.com` for an EU
+project). Never use a personal API key (`phx_…`): it is a secret, and the build refuses it. In PostHog,
+turn on "Discard client IP data".
 
 **Code signing.** To sign builds (which removes the "unknown publisher" warning), add two repository secrets:
 `SIGNING_CERT_PFX_BASE64` (your code-signing certificate as base64) and `SIGNING_CERT_PASSWORD`.

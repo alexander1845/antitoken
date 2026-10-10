@@ -20,10 +20,11 @@ jobs:
       - run: dotnet restore TokenVault.sln
       - run: dotnet build TokenVault.sln -c Release --no-restore
       - run: dotnet run --project tests/TokenVault.Tests -c Release --no-build
-      # Release builds take their version from the tag (the updater compares versions), and the public build settings
-      # from repository VARIABLES (not secrets; both values are public by design):
-      #   UPDATE_PUBLIC_KEY    base64 public key from scripts/New-UpdateSigningKey.ps1 (enables installing updates)
-      #   POSTHOG_PROJECT_KEY  PostHog PROJECT key, phc_... (enables opt-in usage statistics). Never a phx_ personal key.
+      # Release builds take their version from the tag (the updater compares versions). The update public key and the
+      # PostHog project key come from Directory.Build.props; repository VARIABLES of the same name override them
+      # (both values are public by design):
+      #   UPDATE_PUBLIC_KEY    base64 public key from scripts/New-UpdateSigningKey.ps1
+      #   POSTHOG_PROJECT_KEY  PostHog PROJECT key, phc_... Never a phx_ personal key.
       - if: runner.os == 'Windows'
         shell: bash
         env:
@@ -74,6 +75,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: Directory.Build.props
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           name: TokenVault-win-x64
@@ -86,8 +91,11 @@ jobs:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
           UPDATE_PUBLIC_KEY: ${{ vars.UPDATE_PUBLIC_KEY }}
         run: |
+          if [[ -z "$UPDATE_PUBLIC_KEY" ]]; then
+            UPDATE_PUBLIC_KEY=$(sed -n 's:.*<TokenVaultUpdatePublicKey[^>]*>\([A-Za-z0-9+/=]*\)</TokenVaultUpdatePublicKey>.*:\1:p' Directory.Build.props)
+          fi
           if [[ -z "$UPDATE_SIGNING_KEY" || -z "$UPDATE_PUBLIC_KEY" ]]; then
-            echo "::warning::UPDATE_SIGNING_KEY / UPDATE_PUBLIC_KEY not set: this release can't be installed automatically."
+            echo "::warning::UPDATE_SIGNING_KEY secret (or the public key) is missing: this release can't be installed automatically."
             exit 0
           fi
           umask 077
